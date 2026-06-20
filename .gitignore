@@ -1,1 +1,11 @@
 AdvancedNameGenerator.exe
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated images from the world explorer (regenerate with --render)
+world_seed*.png
+procedural_world/*.png
