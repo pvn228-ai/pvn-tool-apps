@@ -314,8 +314,9 @@ class Explorer:
 
     def get_minimap(self):
         size = 200
-        # Coarse step so the minimap spans a large slice of the world.
-        step = max(4, int(self.chunk * 6))
+        # Step small enough that neighbouring samples stay on the same landmass
+        # (terrain features are ~240 tiles; far coarser just aliases into noise).
+        step = max(4, CHUNK // 4)
         half = size // 2
         cxs = int(round(self.cam_x / step))
         cys = int(round(self.cam_y / step))
