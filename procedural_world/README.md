@@ -22,6 +22,8 @@ ever generating the whole thing.
   relief lighting.
 - **Smooth streaming** — chunks generate within a per-frame budget so panning
   doesn't stutter; missing chunks fill in over the next frames.
+- **Day-night cycle** — time-of-day lighting (warm sunrise/sunset, deep blue
+  night, neutral noon) that cycles automatically; pausable and scrubbable.
 - **Deterministic** — the same seed always produces the same world.
 
 ## Install & run
@@ -44,6 +46,8 @@ python main.py --seed 7        # specific world
 | `H` | Toggle help / HUD |
 | `R` | New random seed |
 | `[` / `]` | Previous / next seed |
+| `N` | Pause / resume day-night cycle |
+| `,` / `.` | Scrub time of day |
 | `P` | Save screenshot (PNG) |
 | `Esc` / `Q` | Quit |
 
@@ -58,6 +62,9 @@ python main.py --selftest
 
 # Render a detailed map straight to PNG (no window):
 python main.py --seed 7 --render map.png --rw 1536 --rh 900 --ox -2000 --oy -1500
+
+# Bake day-night lighting into a render (--time 0..1; 0.27 sunrise, 0.5 noon, 0.73 sunset):
+python main.py --seed 7 --render sunset.png --time 0.73
 
 # Run N frames and exit (smoke test):
 SDL_VIDEODRIVER=dummy python main.py --frames 60
