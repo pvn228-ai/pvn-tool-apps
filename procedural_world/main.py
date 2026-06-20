@@ -14,6 +14,8 @@ Controls
   H ................ toggle help / HUD
   R ................ new random seed
   [ / ] ............ previous / next seed
+  N ................ pause / resume day-night cycle
+  , / . ............ scrub time of day
   P ................ save screenshot (png)
   Esc / Q .......... quit
 """
@@ -31,6 +33,60 @@ from worldgen import WorldGenerator, BIOME_NAMES
 CHUNK = 64                 # tiles per chunk edge
 GEN_BUDGET_PER_FRAME = 8   # max chunks generated per frame (keeps panning smooth)
 MAX_CACHED_CHUNKS = 900    # LRU cap on generated chunks
+DAY_LENGTH = 120.0         # seconds for one full day-night cycle
+
+# Day-night lighting: a multiply color sampled across the day. Values < 255
+# darken; warm hues at sunrise/sunset, deep blue at night, neutral at noon.
+# time_of_day is 0..1 with 0.0 = midnight, 0.5 = noon.
+_DAY_KEYS = [
+    (0.00, (56, 76, 138)),    # midnight
+    (0.22, (70, 92, 150)),    # pre-dawn
+    (0.27, (240, 165, 120)),  # sunrise
+    (0.33, (255, 226, 206)),  # early morning
+    (0.50, (255, 255, 255)),  # noon
+    (0.67, (255, 228, 205)),  # afternoon
+    (0.73, (246, 165, 115)),  # sunset
+    (0.80, (120, 105, 165)),  # dusk
+    (0.88, (56, 76, 138)),    # night
+    (1.00, (56, 76, 138)),
+]
+
+
+def day_tint(t):
+    """Return the (r, g, b) multiply color for a time of day in [0, 1)."""
+    t %= 1.0
+    keys = _DAY_KEYS
+    for i in range(len(keys) - 1):
+        t0, c0 = keys[i]
+        t1, c1 = keys[i + 1]
+        if t0 <= t <= t1:
+            f = 0.0 if t1 == t0 else (t - t0) / (t1 - t0)
+            return tuple(c0[k] + (c1[k] - c0[k]) * f for k in range(3))
+    return (255.0, 255.0, 255.0)
+
+
+def day_phase(t):
+    t %= 1.0
+    if t < 0.22 or t >= 0.88:
+        return "Night"
+    if t < 0.30:
+        return "Dawn"
+    if t < 0.45:
+        return "Morning"
+    if t < 0.55:
+        return "Noon"
+    if t < 0.70:
+        return "Afternoon"
+    if t < 0.80:
+        return "Dusk"
+    return "Evening"
+
+
+def clock_str(t):
+    hours = (t % 1.0) * 24.0
+    hh = int(hours)
+    mm = int((hours - hh) * 60)
+    return f"{hh:02d}:{mm:02d}"
 
 
 class ChunkManager:
@@ -129,6 +185,11 @@ class Explorer:
         self.dragging = False
         self.drag_anchor = (0, 0)
 
+        # Day-night cycle.
+        self.time_of_day = 0.5      # start at noon
+        self.day_length = DAY_LENGTH
+        self.cycle_running = True
+
         self._mini_surf = None
         self._mini_key = None
         self.bg = tuple(int(c) for c in self.gen.palette[0])  # deep ocean
@@ -179,6 +240,12 @@ class Explorer:
                 self.set_seed(self.seed + 1)
             elif e.key == pygame.K_LEFTBRACKET:
                 self.set_seed(self.seed - 1)
+            elif e.key == pygame.K_n:
+                self.cycle_running = not self.cycle_running
+            elif e.key == pygame.K_COMMA:
+                self.time_of_day = (self.time_of_day - 0.02) % 1.0
+            elif e.key == pygame.K_PERIOD:
+                self.time_of_day = (self.time_of_day + 0.02) % 1.0
             elif e.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
                 self.zoom_at(self.sw / 2, self.sh / 2, 1.25)
             elif e.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
@@ -236,6 +303,15 @@ class Explorer:
                 sx, sy = self.world_to_screen(cx * self.chunk, cy * self.chunk)
                 self.screen.blit(surf, (int(sx), int(sy)))
 
+    def apply_lighting(self):
+        """Tint the rendered world by the current time of day (multiply blend)."""
+        r, g, b = day_tint(self.time_of_day)
+        if r >= 254 and g >= 254 and b >= 254:
+            return  # noon: no-op
+        overlay = pygame.Surface((self.sw, self.sh))
+        overlay.fill((int(r), int(g), int(b)))
+        self.screen.blit(overlay, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
+
     def get_minimap(self):
         size = 200
         # Coarse step so the minimap spans a large slice of the world.
@@ -287,9 +363,11 @@ class Explorer:
         mx, my = pygame.mouse.get_pos()
         wx, wy = self.screen_to_world(mx, my)
         b, e, t, m = self.gen.biome_at(int(np.floor(wx)), int(np.floor(wy)))
+        paused = "" if self.cycle_running else " (paused)"
         lines = [
             f"seed {self.seed}   fps {fps:4.1f}   zoom {self.zoom:4.1f}px",
             f"pos  ({self.cam_x:8.0f}, {self.cam_y:8.0f})   chunks {len(self.cm.base)}",
+            f"time {clock_str(self.time_of_day)} {day_phase(self.time_of_day)}{paused}",
             f"tile ({int(wx)}, {int(wy)})  {BIOME_NAMES[b]}",
             f"     elev {e:.2f}  temp {t:.2f}  moist {m:.2f}",
         ]
@@ -302,9 +380,10 @@ class Explorer:
             "WASD / Arrows .. pan      Mouse drag .. pan",
             "Wheel / +/- .... zoom     M .......... minimap",
             "R .. random seed   [ ] .. seed -/+",
+            "N .. pause day/night   , . .. scrub time",
             "P .. screenshot    H .. toggle help   Esc/Q .. quit",
         ]
-        self._text_panel(lines, 8, 120)
+        self._text_panel(lines, 8, 140)
 
     def save_screenshot(self):
         fn = f"world_seed{self.seed}_{int(time.time())}.png"
@@ -321,8 +400,11 @@ class Explorer:
                 if not self.handle_event(e):
                     running = False
             self.handle_keys_held(dt)
+            if self.cycle_running:
+                self.time_of_day = (self.time_of_day + dt / self.day_length) % 1.0
 
             self.draw_world()
+            self.apply_lighting()  # world only; minimap + HUD stay readable
             if self.show_minimap:
                 self.draw_minimap()
             self.draw_hud(self.clock.get_fps())
@@ -336,8 +418,11 @@ class Explorer:
         pygame.quit()
 
 
-def render_image(seed, out, tiles_w, tiles_h, ox=0, oy=0, chunk=CHUNK):
-    """Headlessly render a full detailed map (no window) to a PNG."""
+def render_image(seed, out, tiles_w, tiles_h, ox=0, oy=0, chunk=CHUNK, time=None):
+    """Headlessly render a full detailed map (no window) to a PNG.
+
+    If ``time`` (0..1) is given, the day-night lighting for that time is baked in.
+    """
     g = WorldGenerator(seed)
     cols = -(-tiles_w // chunk)
     rows = -(-tiles_h // chunk)
@@ -349,6 +434,9 @@ def render_image(seed, out, tiles_w, tiles_h, ox=0, oy=0, chunk=CHUNK):
             ch = g.generate_chunk(cx0 + c, cy0 + r, chunk)
             img[r * chunk:(r + 1) * chunk, c * chunk:(c + 1) * chunk] = ch.color
     img = img[:tiles_h, :tiles_w]
+    if time is not None:
+        tint = np.array(day_tint(time), dtype=np.float32) / 255.0
+        img = np.clip(img.astype(np.float32) * tint, 0, 255).astype(np.uint8)
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     pygame.init()
     surf = pygame.surfarray.make_surface(np.transpose(img, (1, 0, 2)))
@@ -412,6 +500,8 @@ def main(argv=None):
     ap.add_argument("--rh", type=int, default=640, help="render height in tiles")
     ap.add_argument("--ox", type=int, default=0, help="render origin x (tiles)")
     ap.add_argument("--oy", type=int, default=0, help="render origin y (tiles)")
+    ap.add_argument("--time", type=float, default=None,
+                    help="bake day-night lighting at this time (0..1) into --render")
     args = ap.parse_args(argv)
 
     if args.selftest:
@@ -420,7 +510,8 @@ def main(argv=None):
 
     if args.render:
         seed = args.seed if args.seed is not None else 0
-        render_image(seed, args.render, args.rw, args.rh, args.ox, args.oy, args.chunk)
+        render_image(seed, args.render, args.rw, args.rh, args.ox, args.oy,
+                     args.chunk, args.time)
         return
 
     seed = args.seed if args.seed is not None else random.randint(0, 2**31 - 1)
