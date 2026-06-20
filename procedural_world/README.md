@@ -30,11 +30,37 @@ ever generating the whole thing.
 
 ```bash
 pip install -r requirements.txt
-python main.py                 # random seed
+python main.py                 # explore: free-fly camera over the world
 python main.py --seed 7        # specific world
+python game.py                 # play: walk a character around the world
 ```
 
-## Controls
+## Play prototype (`game.py`)
+
+A controllable character with terrain collision, a follow-camera, the day-night
+cycle, and resource gathering — a starting point toward a playable/interactive
+world.
+
+| Key | Action |
+|-----|--------|
+| `WASD` / Arrows | Move (camera follows) |
+| `E` / `Space` | Gather from the tile or an adjacent feature |
+| Mouse wheel | Zoom |
+| `N` | Pause / resume day-night cycle |
+| `,` / `.` | Scrub time of day |
+| `M` | Toggle minimap |
+| `R` | New world |
+| `H` | Toggle help |
+| `P` | Screenshot |
+| `Esc` / `Q` | Quit |
+
+- You can't walk into water, mountains, or peaks; rough terrain (forest, snow)
+  slows you down.
+- Gathering yields biome-appropriate resources — wood (forests), fiber
+  (grass/savanna), sand (desert), shells (beach), ice (snow/tundra), stone (next
+  to mountains), and fish (next to water) — tracked in an inventory.
+
+## Explore mode controls (`main.py`)
 
 | Key | Action |
 |-----|--------|
