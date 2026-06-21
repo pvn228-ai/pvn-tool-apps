@@ -72,6 +72,10 @@ day-night cycle, resource gathering, plus a life layer —
   factions, and a surviving faction is announced as **dominating the realm**.
   A bottom-left **event log** narrates battles, captures and eliminations, and the
   **minimap is tinted by faction territory**.
+- **Neutral hostile camps** — bandit camps, raider outposts and beast lairs
+  occupy patches of wilderness (shown with a dark-red hostile tint), **raid
+  nearby settlements**, and grow stronger until a faction dispatches an army to
+  **clear** them. Hostile to everyone.
 
 | Key | Action |
 |-----|--------|
