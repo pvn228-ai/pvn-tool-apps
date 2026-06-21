@@ -102,6 +102,8 @@ class Game:
         self.fireflies = Fireflies()
         self.factions = FactionWorld(seed, CHUNK)
         self._terr_cache = {}  # (faction_id, zoom_px) -> translucent Surface
+        self._terr_mini = None       # cached minimap territory overlay
+        self._terr_mini_key = None
         self._light_surf = None  # reusable full-screen lighting overlay
         self._fog_surf = None    # reusable full-screen fog overlay
         self.cond = None  # cached conditions for the player's tile this frame
@@ -507,10 +509,29 @@ class Game:
         self._mini_origin = (x0, y0)
         return self._mini_surf, step, size
 
+    def _minimap_territory(self, x0, y0, step, size):
+        key = (x0, y0, step, self.factions.claims_version)
+        if key == self._terr_mini_key and self._terr_mini is not None:
+            return self._terr_mini
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        ppc = CHUNK / step  # minimap pixels per chunk
+        d = max(1, int(ppc) + 1)
+        for (cx, cy), fid in self.factions.claims.items():
+            sx = (cx * CHUNK - x0) / step
+            sy = (cy * CHUNK - y0) / step
+            if -ppc <= sx <= size and -ppc <= sy <= size:
+                col = self.factions.factions[fid].color
+                surf.fill((col[0], col[1], col[2], 110), (int(sx), int(sy), d, d))
+        self._terr_mini = surf
+        self._terr_mini_key = key
+        return surf
+
     def draw_minimap(self):
         surf, step, size = self.get_minimap()
         x, y = self.sw - size - 12, self.sh - size - 12
         self.screen.blit(surf, (x, y))
+        ox, oy = self._mini_origin
+        self.screen.blit(self._minimap_territory(ox, oy, step, size), (x, y))
         pygame.draw.rect(self.screen, (235, 235, 235), (x, y, size, size), 2)
         ox, oy = self._mini_origin
         mx = x + (self.player.x - ox) / step
@@ -565,10 +586,13 @@ class Game:
         # Army info when standing near a marching stack.
         army = self.factions.nearest_army(self.player.x, self.player.y, 7.0)
         if army:
+            c = army.composition
             ainfo = [
                 f"Army of {army.leader}",
                 f"faction: {army.faction.name}",
-                f"strength: {army.strength} infantry",
+                f"strength: {army.strength}",
+                f"  inf {c.get('infantry', 0)}  cav {c.get('cavalry', 0)}"
+                f"  arc {c.get('archers', 0)}",
             ]
             self._panel(ainfo, self.sw - 8 - max(self.font.size(t)[0] for t in ainfo) - 12,
                         8 + 6 * 18)

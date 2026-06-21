@@ -15,7 +15,15 @@ import random
 
 import numpy as np
 
-from worldgen import DEEP_OCEAN, OCEAN, SHALLOW, MOUNTAIN, SNOW_PEAK
+from worldgen import (
+    DEEP_OCEAN, OCEAN, SHALLOW, MOUNTAIN, SNOW_PEAK,
+    GRASSLAND, SAVANNA, SHRUBLAND, TEMPERATE_FOREST, TROPICAL_FOREST, TAIGA,
+    TEMPERATE_RAINFOREST, TROPICAL_RAINFOREST,
+)
+
+_OPEN_LAND = {GRASSLAND, SAVANNA, SHRUBLAND}
+_WOODLAND = {TEMPERATE_FOREST, TROPICAL_FOREST, TAIGA,
+             TEMPERATE_RAINFOREST, TROPICAL_RAINFOREST}
 
 _UNSUITABLE = {DEEP_OCEAN, OCEAN, SHALLOW, MOUNTAIN, SNOW_PEAK}
 
@@ -77,6 +85,7 @@ class Faction:
         self.color = color
         self.settlements = []
         self.relations = {}   # other_faction_id -> attitude (future use)
+        self.dead = False
 
     def totals(self):
         pop = sum(s.population for s in self.settlements)
@@ -244,8 +253,10 @@ class FactionWorld:
         self.armies = []
         self.directors = []
         self.claims = {}          # (cx, cy) -> faction_id
+        self.claims_version = 0   # bumped whenever claims change (for caches)
         self.contacts = {}        # faction_id -> set(bordering faction_ids)
         self.events = []          # recent world events (battles, captures)
+        self._victory = False
         self._gen = None
         self._rng = random.Random(self.seed ^ 0x5151)
 
@@ -309,6 +320,7 @@ class FactionWorld:
             f.settlements.append(s)
         self.armies = []
         self.events = []
+        self._victory = False
         self.directors = [FactionDirector(f, self.seed) for f in self.factions]
         self._recompute_claims()
         # Bootstrap an initial strategic decision so the world starts with stances
@@ -334,6 +346,7 @@ class FactionWorld:
                         owner_d2[key] = d2
                         claims[key] = s.faction.id
         self.claims = claims
+        self.claims_version += 1
         self._compute_contacts()
 
     def _compute_contacts(self):
@@ -372,6 +385,22 @@ class FactionWorld:
         s = self._rng.choice(faction.settlements)
         return (s.x, s.y)
 
+    def _make_composition(self, n, x, y):
+        """Split a soldier count into troop types, flavored by local terrain
+        (open land favors cavalry, woodland favors archers)."""
+        b = self._gen.biome_at(int(x), int(y))[0] if self._gen else GRASSLAND
+        inf = int(n * 0.5)
+        if b in _OPEN_LAND:
+            cav = int(n * 0.35)
+            arch = n - inf - cav
+        elif b in _WOODLAND:
+            arch = int(n * 0.35)
+            cav = n - inf - arch
+        else:
+            cav = int(n * 0.2)
+            arch = n - inf - cav
+        return {"infantry": inf, "cavalry": cav, "archers": arch}
+
     def raise_army(self, faction):
         """Raise one army from a settlement garrison. Returns it, or None."""
         pool = [s for s in faction.settlements if s.soldiers >= 40]
@@ -381,6 +410,7 @@ class FactionWorld:
         n = int(s.soldiers * 0.6)
         s.soldiers -= n
         army = Army(s.x, s.y, faction, _gen_commander(self._rng), n, home=s)
+        army.composition = self._make_composition(n, s.x, s.y)
         army.target = self._pick_target(faction)
         self.armies.append(army)
         return army
@@ -457,17 +487,41 @@ class FactionWorld:
                 or fb.relations.get(fa.id) == "hostile")
 
     def _event(self, msg):
+        if self.events and self.events[-1] == msg:
+            return  # collapse consecutive duplicates
         self.events.append(msg)
         if len(self.events) > 12:
             self.events.pop(0)
 
+    @staticmethod
+    def _power(a, b):
+        """Effective combat power of army a against b, with troop counters:
+        infantry > cavalry > archers > infantry."""
+        sa = a.strength
+        if sa <= 0:
+            return 0.0
+        bt = b.strength or 1
+        ci = b.composition.get("infantry", 0) / bt
+        cc = b.composition.get("cavalry", 0) / bt
+        ca = b.composition.get("archers", 0) / bt
+        ai = a.composition.get("infantry", 0)
+        ac = a.composition.get("cavalry", 0)
+        aa = a.composition.get("archers", 0)
+        bonus = 0.4 * (ai * cc + ac * ca + aa * ci) \
+            - 0.4 * (ai * ca + ac * ci + aa * cc)
+        return max(1.0, sa + bonus)
+
+    @staticmethod
+    def _scale_comp(army, keep):
+        army.composition = {k: int(v * keep) for k, v in army.composition.items()}
+
     def _battle(self, a, b):
-        sa, sb = a.strength, b.strength
-        if sa <= 0 or sb <= 0:
+        pa, pb = self._power(a, b), self._power(b, a)
+        if a.strength <= 0 or b.strength <= 0:
             return
-        win, lose = (a, b) if self._rng.random() < sa / (sa + sb) else (b, a)
+        win, lose = (a, b) if self._rng.random() < pa / (pa + pb) else (b, a)
         cas = int(min(win.strength * 0.9, lose.strength * 0.6))
-        win.composition = {"infantry": win.strength - cas}
+        self._scale_comp(win, (win.strength - cas) / max(1, win.strength))
         lose.composition = {"infantry": 0}
         win.target = None
         self._event(f"{win.faction.name} beat {lose.faction.name} in the field "
@@ -475,25 +529,34 @@ class FactionWorld:
 
     def _siege(self, army, s):
         tier = TIERS[s.tier]
-        defense = s.soldiers * 1.6 + tier["pop_cap"] * 0.02
+        defense = s.soldiers * 1.25 + tier["pop_cap"] * 0.015
         atk = army.strength
         if self._rng.random() < atk / (atk + defense + 1.0):
             old = s.faction
             cas = int(min(atk * 0.9, defense * 0.7))
-            army.composition = {"infantry": atk - cas}
+            self._scale_comp(army, (atk - cas) / max(1, atk))
+            # The capturing army leaves part of its remaining troops as garrison.
+            garrison = int(army.strength * 0.3)
+            self._scale_comp(army, 0.7)
             old.settlements.remove(s)
             s.faction = army.faction
             army.faction.settlements.append(s)
             s.population *= 0.6
-            s.soldiers = s.population * tier["mil"] * 0.5
+            s.soldiers = garrison + s.population * tier["mil"] * 0.3
             s.wealth *= 0.5
             army.target = None
             self._recompute_claims()
             self._event(f"{army.faction.name} captured {s.name} from {old.name}!")
         else:
             cas = int(min(atk * 0.9, defense * 0.4))
-            army.composition = {"infantry": atk - cas}
+            self._scale_comp(army, (atk - cas) / max(1, atk))
             s.soldiers = max(0.0, s.soldiers - atk * 0.3)
+            # Retreat out of siege range so it doesn't re-assault every tick.
+            dx, dy = army.x - s.x, army.y - s.y
+            dd = math.hypot(dx, dy) or 1.0
+            reach = SIEGE_DIST2 ** 0.5 + 2.0
+            army.x, army.y = s.x + dx / dd * reach, s.y + dy / dd * reach
+            army.target = (army.home.x, army.home.y) if army.home else None
             self._event(f"{army.faction.name}'s assault on {s.name} was repelled")
 
     def _resolve_combat(self):
@@ -524,6 +587,17 @@ class FactionWorld:
                     self._siege(a, s)
                     break
         self.armies = [a for a in self.armies if a.strength > 0]
+        self._check_elimination()
+
+    def _check_elimination(self):
+        alive = [f for f in self.factions if f.settlements]
+        for f in self.factions:
+            if not f.settlements and not f.dead:
+                f.dead = True
+                self._event(f"{f.name} has been eliminated!")
+        if len(alive) == 1 and not self._victory:
+            self._victory = True
+            self._event(f"{alive[0].name} dominates the realm!")
 
     # -- simulation ---------------------------------------------------------
     def update(self, dt_days):
@@ -596,7 +670,6 @@ def selftest():
     fa, fb = fw.factions[0], fw.factions[1]
     fa.relations[fb.id] = "hostile"
     fb.relations[fa.id] = "hostile"
-    from copy import copy
     A = Army(0, 0, fa, "Test A", 300)
     B = Army(1, 0, fb, "Test B", 120)
     fw.armies = [A, B]
@@ -604,6 +677,19 @@ def selftest():
     survivors = [x for x in fw.armies if x.strength > 0]
     print(f"  battle: 300 vs 120 -> survivors {[(x.faction.name, x.strength) for x in survivors]}")
     assert len(survivors) == 1, "battle did not resolve to one survivor"
+
+    # Troop counters: an equal cavalry army beats an archer army most of the time.
+    cav = Army(0, 0, fa, "Cav", 0); cav.composition = {"infantry": 0, "cavalry": 200, "archers": 0}
+    arc = Army(0, 0, fb, "Arc", 0); arc.composition = {"infantry": 0, "cavalry": 0, "archers": 200}
+    wins = 0
+    for _ in range(200):
+        ca = Army(0, 0, fa, "c", 0); ca.composition = dict(cav.composition)
+        ar = Army(0, 0, fb, "a", 0); ar.composition = dict(arc.composition)
+        win, lose = (ca, ar) if fw._power(ca, ar) >= fw._power(ar, ca) else (ar, ca)
+        wins += 1 if fw._power(ca, ar) > fw._power(ar, ca) else 0
+    print(f"  counters: cavalry power vs archers favors cavalry: {wins>0} "
+          f"(cav power {fw._power(cav, arc):.0f} vs arc power {fw._power(arc, cav):.0f})")
+    assert fw._power(cav, arc) > fw._power(arc, cav), "troop counters not applied"
 
     # Conquest: army on an enemy settlement can capture it (territory flips).
     victim = fb.settlements[0]

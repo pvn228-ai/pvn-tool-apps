@@ -64,11 +64,14 @@ day-night cycle, resource gathering, plus a life layer —
   frontiers vs. defend), and **expands by founding new outposts** so territory
   grows over time. Press **F** for a faction overview. The system (`factions.py`)
   supports any number of factions.
-- **War & conquest** — hostile armies fight **stack-vs-stack** (strength +
-  casualties, no per-soldier units), **siege and capture enemy settlements**
-  against their garrison, and **flip territory** when a town changes hands — so
-  borders visibly move over a session. A bottom-left **event log** narrates
-  battles, captures and repelled assaults.
+- **War & conquest** — hostile armies fight **stack-vs-stack** (no per-soldier
+  units) with **troop composition** (infantry > cavalry > archers > infantry, and
+  armies are flavored by where they're raised — open land favors cavalry, woods
+  favor archers). They **siege and capture enemy settlements** (then garrison
+  them), **flip territory** when a town changes hands, can **eliminate** rival
+  factions, and a surviving faction is announced as **dominating the realm**.
+  A bottom-left **event log** narrates battles, captures and eliminations, and the
+  **minimap is tinted by faction territory**.
 
 | Key | Action |
 |-----|--------|
