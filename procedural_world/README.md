@@ -52,6 +52,11 @@ day-night cycle, resource gathering, plus a life layer —
 - **Weather you can feel** — rain and snow particles, wind-blown, with fog when
   visibility drops, all driven by the climate layer.
 - **Ambience** — fireflies come out at night in grassland and forest.
+- **AI factions & settlements** — outposts, towns and cities owned by rival
+  factions, each tracking its own **population, wealth, stockpiles and soldiers**.
+  They grow over time and upgrade tiers; their **territory is shown as a light
+  colored tint** over claimed chunks, and standing near one shows its stats.
+  The system (`factions.py`) is built to support any number of factions.
 
 | Key | Action |
 |-----|--------|

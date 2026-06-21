@@ -36,6 +36,7 @@ from worldgen import (
 from main import ChunkManager, day_tint, day_phase, clock_str, CHUNK, DAY_LENGTH
 from climate import Climate
 from life import FloraField, Fauna, WeatherFX, Fireflies, draw_feature
+from factions import FactionWorld, TIERS
 
 # Tiles you cannot stand on.
 BLOCKED = {DEEP_OCEAN, OCEAN, SHALLOW, MOUNTAIN, SNOW_PEAK}
@@ -99,6 +100,8 @@ class Game:
         self.fauna = Fauna(seed)
         self.fx = WeatherFX()
         self.fireflies = Fireflies()
+        self.factions = FactionWorld(seed, CHUNK)
+        self._terr_cache = {}  # (faction_id, zoom_px) -> translucent Surface
         self.cond = None  # cached conditions for the player's tile this frame
         self._biome_cache = {}  # (tx, ty) -> biome id, for tiles outside loaded chunks
 
@@ -122,6 +125,7 @@ class Game:
         sx, sy = self.find_spawn()
         self.player = Player(sx, sy)
         self.bg = tuple(int(c) for c in self.gen.palette[0])
+        self.factions.generate(self.gen, self.player.x, self.player.y)
 
     # -- world helpers ------------------------------------------------------
     def biome_id(self, x, y):
@@ -179,11 +183,14 @@ class Game:
         self.fauna.reset()
         self.fx.reset()
         self.fireflies.reset()
+        self.factions = FactionWorld(self.seed, CHUNK)
+        self._terr_cache.clear()
         self._biome_cache.clear()
         self._mini_key = None
         self.bg = tuple(int(c) for c in self.gen.palette[0])
         sx, sy = self.find_spawn()
         self.player = Player(sx, sy)
+        self.factions.generate(self.gen, self.player.x, self.player.y)
         self.floaters.clear()
 
     def handle_event(self, e):
@@ -256,6 +263,9 @@ class Game:
         firefly_biome = self.biome_id(self.player.x, self.player.y) in (
             GRASSLAND, SHRUBLAND, SAVANNA, TEMPERATE_FOREST, TROPICAL_FOREST)
         self.fireflies.update(dt, night and firefly_biome, self.sw, self.sh)
+
+        # Faction economies advance in game-days.
+        self.factions.update(dt / self.day_length)
 
     def _move(self, dx, dy):
         # Axis-separated so the player slides along walls instead of sticking.
@@ -335,6 +345,56 @@ class Game:
                     drawn += 1
                     if drawn >= 1600:
                         return
+
+    def _territory_surf(self, fid, zoom_px):
+        key = (fid, zoom_px)
+        s = self._terr_cache.get(key)
+        if s is None:
+            s = pygame.Surface((zoom_px, zoom_px), pygame.SRCALPHA)
+            col = self.factions.factions[fid].color
+            s.fill((col[0], col[1], col[2], 55))
+            self._terr_cache[key] = s
+        return s
+
+    def draw_territory(self):
+        claims = self.factions.claims
+        if not claims:
+            return
+        zoom_px = max(1, int(round(CHUNK * self.zoom)))
+        wx0, wy0 = self.screen_to_world(0, 0)
+        wx1, wy1 = self.screen_to_world(self.sw, self.sh)
+        cx0, cy0 = int(wx0 // CHUNK), int(wy0 // CHUNK)
+        cx1, cy1 = int(wx1 // CHUNK), int(wy1 // CHUNK)
+        for cy in range(cy0, cy1 + 1):
+            for cx in range(cx0, cx1 + 1):
+                fid = claims.get((cx, cy))
+                if fid is None:
+                    continue
+                sx, sy = self.world_to_screen(cx * CHUNK, cy * CHUNK)
+                self.screen.blit(self._territory_surf(fid, zoom_px), (int(sx), int(sy)))
+
+    def draw_settlements(self):
+        for s in self.factions.settlements:
+            sx, sy = self.world_to_screen(s.x, s.y)
+            if sx < -20 or sx > self.sw + 20 or sy < -20 or sy > self.sh + 20:
+                continue
+            r = TIERS[s.tier]["marker"]
+            col = s.faction.color
+            ix, iy = int(sx), int(sy)
+            if s.tier == 2:        # city: square
+                pygame.draw.rect(self.screen, col, (ix - r, iy - r, r * 2, r * 2))
+                pygame.draw.rect(self.screen, (245, 245, 245), (ix - r, iy - r, r * 2, r * 2), 2)
+            elif s.tier == 1:      # town: diamond
+                pts = [(ix, iy - r), (ix + r, iy), (ix, iy + r), (ix - r, iy)]
+                pygame.draw.polygon(self.screen, col, pts)
+                pygame.draw.polygon(self.screen, (245, 245, 245), pts, 2)
+            else:                  # outpost: circle
+                pygame.draw.circle(self.screen, col, (ix, iy), r)
+                pygame.draw.circle(self.screen, (245, 245, 245), (ix, iy), r, 1)
+            if self.zoom >= 12:
+                label = self.font.render(s.name, True, (245, 245, 245))
+                label.set_alpha(220)
+                self.screen.blit(label, (ix - label.get_width() // 2, iy - r - 18))
 
     def apply_lighting(self):
         r, g, b = day_tint(self.time_of_day)
@@ -430,6 +490,19 @@ class Game:
             inv = ["Inventory:"] + [f"  {k}: {v}" for k, v in sorted(self.inventory.items())]
             self._panel(inv, 8, 8 + 5 * 18 + 14)
 
+        # Settlement info when standing near one.
+        near = self.factions.nearest_settlement(self.player.x, self.player.y, 9.0)
+        if near:
+            st = near.stock
+            info = [
+                f"{near.name}  ({near.kind})",
+                f"faction: {near.faction.name}",
+                f"pop {int(near.population)}   soldiers {int(near.soldiers)}",
+                f"wealth {int(near.wealth)}g",
+                f"food {int(st['food'])}  wood {int(st['wood'])}  stone {int(st['stone'])}",
+            ]
+            self._panel(info, self.sw - 8 - max(self.font.size(t)[0] for t in info) - 12, 8)
+
         tgt = self.gather_target()
         if tgt:
             prompt = self.bigfont.render(f"[E] gather {tgt[0]}", True, (255, 255, 180))
@@ -468,9 +541,11 @@ class Game:
     def render(self, fps=0.0):
         self.draw_world()
         self.apply_lighting()
+        self.draw_territory()      # faction tint over terrain
         self.draw_flora()          # scatter under entities
         self.draw_floaters()
         self.fauna.draw(self.screen, self.world_to_screen, self.zoom)
+        self.draw_settlements()
         self.draw_player()
         self.fireflies.draw(self.screen)
         self.draw_fog()            # weather haze over the world
