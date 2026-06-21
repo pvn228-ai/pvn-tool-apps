@@ -46,7 +46,9 @@ python game.py                 # play: walk a character around the world
 A controllable character in a **living world**: terrain collision, follow-camera,
 day-night cycle, resource gathering, **survival & combat** (health, fight wildlife
 and hostile camps with `Space`, take damage from predators/raiders, die & respawn,
-loot fallen creatures), plus a life layer —
+loot fallen creatures), and an **economy** (sell goods at towns for gold, build
+**reputation**, take **bounties** to clear camps, and **swear allegiance** to a
+faction), plus a life layer —
 
 - **Flora** — deterministic scatter of trees, pines, cacti, rocks, bushes, grass
   and flowers, placed by biome (forests are dense, deserts get cacti, etc.).
@@ -84,6 +86,7 @@ loot fallen creatures), plus a life layer —
 | `WASD` / Arrows | Move (camera follows) |
 | `E` | Gather from the tile or an adjacent feature |
 | `Space` | Attack (creatures, or chip a hostile camp) |
+| `T` / `B` / `G` | At a town: sell goods / buy a heal / swear allegiance |
 | Mouse wheel | Zoom |
 | `N` | Pause / resume day-night cycle |
 | `,` / `.` | Scrub time of day |

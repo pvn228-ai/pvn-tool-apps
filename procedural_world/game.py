@@ -73,6 +73,12 @@ RESOURCE_COLOR = {
 BASE_SPEED = 7.5       # tiles / second
 GATHER_COOLDOWN = 0.18  # seconds between gathers
 
+SELL_PRICES = {"fang": 12, "hide": 6, "meat": 5, "stone": 4, "shell": 4,
+               "wood": 3, "fish": 3, "fiber": 2, "ice": 2, "sand": 1}
+HEAL_COST = 30          # gold for a full-heal ration at a town
+ALLY_REP = 40           # reputation needed to swear allegiance
+TRADE_RANGE = 9.0       # how close to a settlement you must be to deal
+
 
 class Player:
     def __init__(self, x, y):
@@ -124,6 +130,9 @@ class Game:
 
         self.inventory = {}
         self.gold = 0
+        self.reputation = {}        # faction_id -> reputation (0..100)
+        self.ally = None            # faction_id the player is allied with
+        self.bounty = None          # {faction, camp, reward}
         self.floaters = []          # transient "+1 wood" / "-dmg" popups
         self._gather_timer = 0.0
         # Player survival / combat.
@@ -211,6 +220,9 @@ class Game:
         self.hp = self.max_hp
         self.alive = True
         self.respawn_timer = 0.0
+        self.reputation = {}
+        self.ally = None
+        self.bounty = None
 
     def handle_event(self, e):
         if e.type == pygame.QUIT:
@@ -228,6 +240,12 @@ class Game:
                 self.try_gather()
             elif e.key == pygame.K_SPACE:
                 self.attack()
+            elif e.key == pygame.K_t:
+                self.trade()
+            elif e.key == pygame.K_b:
+                self.buy_heal()
+            elif e.key == pygame.K_g:
+                self.swear_allegiance()
             elif e.key == pygame.K_m:
                 self.show_minimap = not self.show_minimap
             elif e.key == pygame.K_h:
@@ -274,6 +292,7 @@ class Game:
             camp = self.factions.nearest_camp(self.player.x, self.player.y, 5.5)
             if camp:
                 self.hurt(7.0 * dt, f"the {camp.kind}")
+            self._update_bounty()
 
         keys = pygame.key.get_pressed()
         if self.alive:
@@ -348,6 +367,62 @@ class Game:
         })
         self._gather_timer = GATHER_COOLDOWN
 
+    # -- economy, reputation, bounties --------------------------------------
+    def _add_rep(self, faction, amount):
+        self.reputation[faction.id] = min(100, self.reputation.get(faction.id, 0) + amount)
+
+    def trade(self):
+        """Sell all sellable goods to the nearest settlement for gold + rep."""
+        s = self.factions.nearest_settlement(self.player.x, self.player.y, TRADE_RANGE)
+        if s is None:
+            return
+        earned = 0
+        for res, price in SELL_PRICES.items():
+            qty = self.inventory.get(res, 0)
+            if qty > 0:
+                earned += qty * price
+                self.inventory[res] = 0
+        if earned <= 0:
+            return
+        self.gold += earned
+        s.wealth += earned * 0.5
+        self._add_rep(s.faction, max(1, earned // 25))
+        self._floater(self.player.x, self.player.y, f"sold for {earned}g", (240, 220, 120))
+
+    def buy_heal(self):
+        s = self.factions.nearest_settlement(self.player.x, self.player.y, TRADE_RANGE)
+        if s is None or self.gold < HEAL_COST or self.hp >= self.max_hp:
+            return
+        self.gold -= HEAL_COST
+        s.wealth += HEAL_COST
+        self.hp = self.max_hp
+        self._floater(self.player.x, self.player.y, "healed", (140, 240, 160))
+
+    def swear_allegiance(self):
+        s = self.factions.nearest_settlement(self.player.x, self.player.y, TRADE_RANGE)
+        if s is None:
+            return
+        if self.reputation.get(s.faction.id, 0) >= ALLY_REP:
+            self.ally = s.faction.id
+            self.factions.events.append(f"You swore allegiance to {s.faction.name}.")
+            self._floater(self.player.x, self.player.y, f"allied: {s.faction.name}",
+                          s.faction.color)
+
+    def _update_bounty(self):
+        # Offer a bounty from a nearby town to clear a nearby camp.
+        if self.bounty is not None:
+            if self.bounty["camp"] not in self.factions.camps:
+                self.bounty = None      # camp gone (cleared by someone) -> expire
+            return
+        s = self.factions.nearest_settlement(self.player.x, self.player.y, TRADE_RANGE)
+        if s is None or not self.factions.camps:
+            return
+        camp = min(self.factions.camps,
+                   key=lambda c: (c.x - s.x) ** 2 + (c.y - s.y) ** 2)
+        if (camp.x - s.x) ** 2 + (camp.y - s.y) ** 2 < 120 * 120:
+            self.bounty = {"faction": s.faction, "camp": camp,
+                           "reward": 80 + camp.strength // 4}
+
     # -- combat & survival --------------------------------------------------
     def _floater(self, x, y, text, color):
         self.floaters.append({"x": x, "y": y, "text": text, "color": color, "life": 1.0})
@@ -407,8 +482,16 @@ class Game:
             if camp.strength <= 0:
                 self.factions.camps.remove(camp)
                 self.factions._recompute_camp_claims()
-                self.gold += 50
-                self.factions.events.append(f"You cleared a {camp.kind}! (+50g)")
+                reward = 50
+                if self.bounty and self.bounty["camp"] is camp:
+                    reward += self.bounty["reward"]
+                    self._add_rep(self.bounty["faction"], 8)
+                    self.factions.events.append(
+                        f"Bounty complete for {self.bounty['faction'].name}! (+{reward}g)")
+                    self.bounty = None
+                else:
+                    self.factions.events.append(f"You cleared a {camp.kind}! (+{reward}g)")
+                self.gold += reward
 
     # -- rendering ----------------------------------------------------------
     def draw_world(self):
@@ -697,10 +780,12 @@ class Game:
             f"wind {cond['wind_dir']}  precip {int(cond['precip'] * 100)}%",
             f"creatures nearby: {len(self.fauna.critters)}",
         ]
+        if self.ally is not None:
+            lines.append(f"allied with {self.factions.factions[self.ally].name}")
         self._panel(lines, 8, 8)
 
         # Health bar + gold.
-        by = 8 + 5 * 18 + 12
+        by = 8 + len(lines) * 18 + 16
         bw, bh = 150, 14
         pygame.draw.rect(self.screen, (40, 20, 20), (8, by, bw, bh))
         frac = max(0.0, self.hp / self.max_hp)
@@ -719,18 +804,30 @@ class Game:
             msg = self.bigfont.render("You died — respawning...", True, (255, 180, 180))
             self.screen.blit(msg, (self.sw // 2 - msg.get_width() // 2, self.sh // 2 - 80))
 
-        # Settlement info when standing near one.
-        near = self.factions.nearest_settlement(self.player.x, self.player.y, 9.0)
+        # Settlement info + trading when standing near one.
+        near = self.factions.nearest_settlement(self.player.x, self.player.y, TRADE_RANGE)
         if near:
             st = near.stock
+            rep = self.reputation.get(near.faction.id, 0)
+            allied = "  [ALLIED]" if self.ally == near.faction.id else ""
             info = [
                 f"{near.name}  ({near.kind})",
-                f"faction: {near.faction.name}",
+                f"faction: {near.faction.name}{allied}",
+                f"reputation: {rep}/100",
                 f"pop {int(near.population)}   soldiers {int(near.soldiers)}",
                 f"wealth {int(near.wealth)}g",
-                f"food {int(st['food'])}  wood {int(st['wood'])}  stone {int(st['stone'])}",
+                "[T] sell goods   [B] heal 30g"
+                + ("   [G] ally" if rep >= ALLY_REP and self.ally != near.faction.id else ""),
             ]
             self._panel(info, self.sw - 8 - max(self.font.size(t)[0] for t in info) - 12, 8)
+
+        # Active bounty.
+        if self.bounty:
+            b = self.bounty
+            btxt = [f"Bounty — {b['faction'].name}",
+                    f"clear the {b['camp'].kind}: {b['reward']}g"]
+            self._panel(btxt, self.sw - 8 - max(self.font.size(t)[0] for t in btxt) - 12,
+                        8 + 7 * 18)
 
         # Army info when standing near a marching stack.
         army = self.factions.nearest_army(self.player.x, self.player.y, 7.0)
@@ -780,7 +877,7 @@ class Game:
     def draw_help(self):
         lines = [
             "WASD / Arrows .. move      E .. gather",
-            "Space .. attack (creatures / hostile camps)",
+            "Space .. attack    T .. sell    B .. heal    G .. ally",
             "Wheel .. zoom   N .. pause day/night   , . .. time",
             "M .. minimap   F .. factions   R .. new world",
             "P .. screenshot   H .. toggle help   Esc/Q .. quit",
