@@ -396,6 +396,23 @@ class Game:
                 label.set_alpha(220)
                 self.screen.blit(label, (ix - label.get_width() // 2, iy - r - 18))
 
+    def draw_armies(self):
+        for a in self.factions.armies:
+            sx, sy = self.world_to_screen(a.x, a.y)
+            if sx < -20 or sx > self.sw + 20 or sy < -20 or sy > self.sh + 20:
+                continue
+            ix, iy = int(sx), int(sy)
+            col = a.faction.color
+            r = 6
+            # Army token: a pennant (down-pointing triangle) to distinguish from towns.
+            pts = [(ix - r, iy - r), (ix + r, iy - r), (ix, iy + r)]
+            pygame.draw.polygon(self.screen, col, pts)
+            pygame.draw.polygon(self.screen, (20, 20, 25), pts, 1)
+            if self.zoom >= 10:
+                lbl = self.font.render(str(a.strength), True, (250, 250, 250))
+                lbl.set_alpha(230)
+                self.screen.blit(lbl, (ix - lbl.get_width() // 2, iy - r - 16))
+
     def apply_lighting(self):
         r, g, b = day_tint(self.time_of_day)
         if r >= 254 and g >= 254 and b >= 254:
@@ -503,6 +520,17 @@ class Game:
             ]
             self._panel(info, self.sw - 8 - max(self.font.size(t)[0] for t in info) - 12, 8)
 
+        # Army info when standing near a marching stack.
+        army = self.factions.nearest_army(self.player.x, self.player.y, 7.0)
+        if army:
+            ainfo = [
+                f"Army of {army.leader}",
+                f"faction: {army.faction.name}",
+                f"strength: {army.strength} infantry",
+            ]
+            self._panel(ainfo, self.sw - 8 - max(self.font.size(t)[0] for t in ainfo) - 12,
+                        8 + 6 * 18)
+
         tgt = self.gather_target()
         if tgt:
             prompt = self.bigfont.render(f"[E] gather {tgt[0]}", True, (255, 255, 180))
@@ -546,6 +574,7 @@ class Game:
         self.draw_floaters()
         self.fauna.draw(self.screen, self.world_to_screen, self.zoom)
         self.draw_settlements()
+        self.draw_armies()
         self.draw_player()
         self.fireflies.draw(self.screen)
         self.draw_fog()            # weather haze over the world

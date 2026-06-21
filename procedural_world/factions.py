@@ -55,6 +55,18 @@ def _gen_name(rng):
     return (rng.choice(_SYL_A) + rng.choice(_SYL_B)).capitalize() + rng.choice(_SUFFIX)
 
 
+_FIRST = ["Aldric", "Bryn", "Cael", "Doran", "Edric", "Fenna", "Gwen", "Hale",
+          "Ivar", "Jor", "Kara", "Lys", "Mara", "Nils", "Orin", "Pell", "Rurik",
+          "Sable", "Tova", "Ulf", "Vera", "Wystan"]
+_EPITHET = ["", "", "", "the Bold", "the Grim", "Ironhand", "the Swift",
+            "Stormborn", "of the Vale"]
+
+
+def _gen_commander(rng):
+    e = rng.choice(_EPITHET)
+    return rng.choice(_FIRST) + (" " + e if e else "")
+
+
 class Faction:
     def __init__(self, fid, name, color):
         self.id = fid
@@ -118,6 +130,32 @@ class Settlement:
         return False
 
 
+class Army:
+    """An aggregate field army led by a commander/vassal.
+
+    Strength is a *count* (composition-ready), never individual unit objects, so
+    the world holds at most a few dozen of these tokens. Battles will resolve
+    stack-vs-stack later.
+    """
+    __slots__ = ("x", "y", "faction", "leader", "composition", "target",
+                 "speed", "home")
+
+    def __init__(self, x, y, faction, leader, strength, home=None):
+        self.x = x
+        self.y = y
+        self.faction = faction
+        self.leader = leader
+        # Single troop type for now; add cavalry/archers later with no refactor.
+        self.composition = {"infantry": int(strength)}
+        self.target = None        # (x, y) move order
+        self.speed = 120.0        # tiles per game-day
+        self.home = home          # settlement it was raised from
+
+    @property
+    def strength(self):
+        return int(sum(self.composition.values()))
+
+
 class FactionWorld:
     """Holds all factions/settlements and the chunk->faction claims map."""
 
@@ -127,7 +165,9 @@ class FactionWorld:
         self.n_factions = min(n_factions, len(FACTION_DEFS))
         self.factions = []
         self.settlements = []
+        self.armies = []
         self.claims = {}          # (cx, cy) -> faction_id
+        self._rng = random.Random(self.seed ^ 0x5151)
 
     # -- placement ----------------------------------------------------------
     def generate(self, gen, ox, oy, radius=520, spacing=58, max_settlements=55):
@@ -173,6 +213,7 @@ class FactionWorld:
         self.settlements = self.settlements[:max_settlements]
         for f in self.factions:
             f.settlements = [s for s in self.settlements if s.faction is f]
+        self.armies = []
         self._recompute_claims()
 
     # -- claims / territory -------------------------------------------------
@@ -205,6 +246,58 @@ class FactionWorld:
                 best, bestd = s, d2
         return best
 
+    def nearest_army(self, x, y, max_dist=8.0):
+        best, bestd = None, max_dist * max_dist
+        for a in self.armies:
+            d2 = (a.x - x) ** 2 + (a.y - y) ** 2
+            if d2 < bestd:
+                best, bestd = a, d2
+        return best
+
+    # -- armies (aggregate stacks) ------------------------------------------
+    def _pick_target(self, faction):
+        if len(faction.settlements) <= 1:
+            return None
+        s = self._rng.choice(faction.settlements)
+        return (s.x, s.y)
+
+    def _update_armies(self, dt_days):
+        # Maintain a target number of armies per faction, raised from settlement
+        # garrisons (soldiers move from "in town" to "in the field").
+        for f in self.factions:
+            target = min(4, 1 + len(f.settlements) // 4)
+            cur = sum(1 for a in self.armies if a.faction is f)
+            if cur < target:
+                pool = [s for s in f.settlements if s.soldiers >= 40]
+                if pool:
+                    s = self._rng.choice(pool)
+                    n = int(s.soldiers * 0.6)
+                    s.soldiers -= n
+                    army = Army(s.x, s.y, f, _gen_commander(self._rng), n, home=s)
+                    army.target = self._pick_target(f)
+                    self.armies.append(army)
+
+        # March each army toward its order; on arrival pick a new friendly town
+        # (or occasionally disband back into its home garrison).
+        for a in self.armies:
+            if a.target is None:
+                a.target = self._pick_target(a.faction)
+                if a.target is None:
+                    continue
+            tx, ty = a.target
+            dx, dy = tx - a.x, ty - a.y
+            d = math.hypot(dx, dy)
+            if d < 3.0:
+                if self._rng.random() < 0.12 and a.home is not None:
+                    a.home.soldiers += a.strength
+                    a.composition = {"infantry": 0}
+                a.target = self._pick_target(a.faction)
+            else:
+                step = min(d, a.speed * dt_days)
+                a.x += dx / d * step
+                a.y += dy / d * step
+        self.armies = [a for a in self.armies if a.strength > 0]
+
     # -- simulation ---------------------------------------------------------
     def update(self, dt_days):
         if dt_days <= 0 or not self.settlements:
@@ -215,6 +308,7 @@ class FactionWorld:
                 upgraded = True
         if upgraded:
             self._recompute_claims()
+        self._update_armies(dt_days)
 
 
 def selftest():
@@ -251,6 +345,16 @@ def selftest():
     assert s.population > pop0, "population did not grow"
     tot_pop, tot_gold, tot_sol = fw.factions[0].totals()
     print(f"  {fw.factions[0].name}: pop {tot_pop} gold {tot_gold} soldiers {tot_sol}")
+
+    # Armies get raised and move.
+    assert fw.armies, "no armies were raised"
+    a = fw.armies[0]
+    ax0, ay0 = a.x, a.y
+    for _ in range(50):
+        fw.update(0.1)
+    moved = (a.x, a.y) != (ax0, ay0) if a in fw.armies else True
+    print(f"  armies: {len(fw.armies)} (e.g. {a.leader}, {a.strength} infantry), moving: {moved}")
+    assert moved, "armies did not move"
     print("factions selftest OK")
 
 
