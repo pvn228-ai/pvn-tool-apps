@@ -34,6 +34,7 @@ from worldgen import (
     TROPICAL_FOREST, TROPICAL_RAINFOREST, MOUNTAIN, SNOW_PEAK,
 )
 from main import ChunkManager, day_tint, day_phase, clock_str, CHUNK, DAY_LENGTH
+from climate import Climate
 
 # Tiles you cannot stand on.
 BLOCKED = {DEEP_OCEAN, OCEAN, SHALLOW, MOUNTAIN, SNOW_PEAK}
@@ -90,11 +91,13 @@ class Game:
         self.seed = seed
         self.gen = WorldGenerator(seed)
         self.cm = ChunkManager(self.gen, CHUNK)
+        self.climate = Climate(self.gen)
 
         self.zoom = 14.0
         self.min_zoom, self.max_zoom = 6.0, 40.0
 
         self.time_of_day = 0.35
+        self.day = 0
         self.day_length = DAY_LENGTH
         self.cycle_running = True
 
@@ -149,6 +152,7 @@ class Game:
         self.seed = int(seed) & 0x7FFFFFFF
         self.gen = WorldGenerator(self.seed)
         self.cm.reset(self.gen)
+        self.climate = Climate(self.gen)
         self._mini_key = None
         self.bg = tuple(int(c) for c in self.gen.palette[0])
         sx, sy = self.find_spawn()
@@ -190,7 +194,10 @@ class Game:
 
     def update(self, dt):
         if self.cycle_running:
-            self.time_of_day = (self.time_of_day + dt / self.day_length) % 1.0
+            prev = self.time_of_day
+            self.time_of_day = (prev + dt / self.day_length) % 1.0
+            if self.time_of_day < prev:
+                self.day += 1
         self._gather_timer = max(0.0, self._gather_timer - dt)
 
         keys = pygame.key.get_pressed()
@@ -341,18 +348,22 @@ class Game:
                              (x + pad, y + pad + i * 18))
 
     def draw_hud(self, fps):
-        biome = self.biome_id(self.player.x, self.player.y)
+        cond = self.climate.conditions_at(
+            self.player.x, self.player.y, self.time_of_day, self.day)
         paused = "" if self.cycle_running else " (paused)"
         lines = [
             f"seed {self.seed}   fps {fps:4.1f}   zoom {self.zoom:4.1f}px",
-            f"pos ({self.player.x:7.1f}, {self.player.y:7.1f})  {BIOME_NAMES[biome]}",
-            f"time {clock_str(self.time_of_day)} {day_phase(self.time_of_day)}{paused}",
+            f"pos ({self.player.x:7.1f}, {self.player.y:7.1f})  {cond['biome_name']}",
+            f"day {self.day}  {clock_str(self.time_of_day)} "
+            f"{day_phase(self.time_of_day)}{paused}",
+            f"{cond['temp_c']:+.0f}°C  {cond['weather']}  "
+            f"wind {cond['wind_dir']}  precip {int(cond['precip'] * 100)}%",
         ]
         self._panel(lines, 8, 8)
 
         if self.inventory:
             inv = ["Inventory:"] + [f"  {k}: {v}" for k, v in sorted(self.inventory.items())]
-            self._panel(inv, 8, 8 + 3 * 18 + 14)
+            self._panel(inv, 8, 8 + 4 * 18 + 14)
 
         tgt = self.gather_target()
         if tgt:
