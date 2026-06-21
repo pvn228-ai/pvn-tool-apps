@@ -28,7 +28,9 @@ ever generating the whole thing.
   wind and drifting rain/snow fronts (see `climate.py`).
 - **Living world** — flora, roaming wildlife, weather effects and night fireflies
   in the play mode (see `life.py`).
-- **Deterministic** — the same seed always produces the same world.
+- **Deterministic terrain** — the same seed always produces the same terrain,
+  biomes, flora and settlement placement. (Dynamic state — wildlife, armies and
+  evolving weather — runs in real time and is not seed-reproducible.)
 
 ## Install & run
 
