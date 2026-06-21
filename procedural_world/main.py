@@ -97,6 +97,7 @@ class ChunkManager:
         self.chunk = chunk
         self.base = {}      # (cx, cy) -> base Surface (chunk x chunk px)
         self.scaled = {}    # (cx, cy) -> (zoom_px, Surface)
+        self.chunks = {}    # (cx, cy) -> Chunk (biome/field data; for flora etc.)
         self.order = []     # MRU list of keys for LRU eviction
         self.budget = 0
 
@@ -104,6 +105,7 @@ class ChunkManager:
         self.gen = generator
         self.base.clear()
         self.scaled.clear()
+        self.chunks.clear()
         self.order.clear()
 
     def begin_frame(self):
@@ -122,6 +124,7 @@ class ChunkManager:
             old = self.order.pop(0)
             self.base.pop(old, None)
             self.scaled.pop(old, None)
+            self.chunks.pop(old, None)
 
     def _make_base(self, key):
         cx, cy = key
@@ -129,6 +132,7 @@ class ChunkManager:
         # color is (H, W, 3) [y, x]; make_surface wants (W, H, 3) [x, y].
         surf = pygame.surfarray.make_surface(np.transpose(ch.color, (1, 0, 2)))
         self.base[key] = surf
+        self.chunks[key] = ch
         self._touch(key)
         self._evict()
         return surf

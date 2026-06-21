@@ -24,6 +24,10 @@ ever generating the whole thing.
   doesn't stutter; missing chunks fill in over the next frames.
 - **Day-night cycle** — time-of-day lighting (warm sunrise/sunset, deep blue
   night, neutral noon) that cycles automatically; pausable and scrubbable.
+- **Climate & weather data layer** — per-tile temperature/moisture, plus dynamic
+  wind and drifting rain/snow fronts (see `climate.py`).
+- **Living world** — flora, roaming wildlife, weather effects and night fireflies
+  in the play mode (see `life.py`).
 - **Deterministic** — the same seed always produces the same world.
 
 ## Install & run
@@ -37,9 +41,17 @@ python game.py                 # play: walk a character around the world
 
 ## Play prototype (`game.py`)
 
-A controllable character with terrain collision, a follow-camera, the day-night
-cycle, and resource gathering — a starting point toward a playable/interactive
-world.
+A controllable character in a **living world**: terrain collision, follow-camera,
+day-night cycle, resource gathering, plus a life layer —
+
+- **Flora** — deterministic scatter of trees, pines, cacti, rocks, bushes, grass
+  and flowers, placed by biome (forests are dense, deserts get cacti, etc.).
+- **Wildlife** — deer, rabbits, camels, fish, birds and (at night) wolves roam
+  around you. They're biome- and day/night-aware, wander, and flee when you
+  approach. Population streams in/out around the player.
+- **Weather you can feel** — rain and snow particles, wind-blown, with fog when
+  visibility drops, all driven by the climate layer.
+- **Ambience** — fireflies come out at night in grassland and forest.
 
 | Key | Action |
 |-----|--------|

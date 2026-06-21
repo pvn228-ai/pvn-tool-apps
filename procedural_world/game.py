@@ -35,6 +35,7 @@ from worldgen import (
 )
 from main import ChunkManager, day_tint, day_phase, clock_str, CHUNK, DAY_LENGTH
 from climate import Climate
+from life import FloraField, Fauna, WeatherFX, Fireflies, draw_feature
 
 # Tiles you cannot stand on.
 BLOCKED = {DEEP_OCEAN, OCEAN, SHALLOW, MOUNTAIN, SNOW_PEAK}
@@ -92,6 +93,13 @@ class Game:
         self.gen = WorldGenerator(seed)
         self.cm = ChunkManager(self.gen, CHUNK)
         self.climate = Climate(self.gen)
+
+        # Living-world layers.
+        self.flora = FloraField(seed)
+        self.fauna = Fauna(seed)
+        self.fx = WeatherFX()
+        self.fireflies = Fireflies()
+        self.cond = None  # cached conditions for the player's tile this frame
 
         self.zoom = 14.0
         self.min_zoom, self.max_zoom = 6.0, 40.0
@@ -153,6 +161,10 @@ class Game:
         self.gen = WorldGenerator(self.seed)
         self.cm.reset(self.gen)
         self.climate = Climate(self.gen)
+        self.flora = FloraField(self.seed)
+        self.fauna.reset()
+        self.fx.reset()
+        self.fireflies.reset()
         self._mini_key = None
         self.bg = tuple(int(c) for c in self.gen.palette[0])
         sx, sy = self.find_spawn()
@@ -219,6 +231,17 @@ class Game:
             f["life"] -= dt
         self.floaters = [f for f in self.floaters if f["life"] > 0]
 
+        # Living world.
+        self.cond = self.climate.conditions_at(
+            self.player.x, self.player.y, self.time_of_day, self.day)
+        self.fauna.update(dt, self, self.time_of_day)
+        self.fx.update(dt, self.cond["weather"], self.cond["precip"],
+                       self.cond["wind"], self.sw, self.sh)
+        night = self.time_of_day < 0.22 or self.time_of_day >= 0.88
+        firefly_biome = self.biome_id(self.player.x, self.player.y) in (
+            GRASSLAND, SHRUBLAND, SAVANNA, TEMPERATE_FOREST, TROPICAL_FOREST)
+        self.fireflies.update(dt, night and firefly_biome, self.sw, self.sh)
+
     def _move(self, dx, dy):
         # Axis-separated so the player slides along walls instead of sticking.
         if self.walkable(self.player.x + dx, self.player.y):
@@ -274,6 +297,29 @@ class Game:
                     continue
                 sx, sy = self.world_to_screen(cx * CHUNK, cy * CHUNK)
                 self.screen.blit(surf, (int(sx), int(sy)))
+
+    def draw_flora(self):
+        if self.zoom < 8:   # too far out to be worth drawing
+            return
+        drawn = 0
+        wx0, wy0 = self.screen_to_world(-20, -20)
+        wx1, wy1 = self.screen_to_world(self.sw + 20, self.sh + 20)
+        cx0, cy0 = int(wx0 // CHUNK), int(wy0 // CHUNK)
+        cx1, cy1 = int(wx1 // CHUNK), int(wy1 // CHUNK)
+        for cy in range(cy0, cy1 + 1):
+            for cx in range(cx0, cx1 + 1):
+                ch = self.cm.chunks.get((cx, cy))
+                if ch is None:
+                    continue
+                for fx, fy, kind, scale in self.flora.for_chunk(ch):
+                    if fx < wx0 or fx > wx1 or fy < wy0 or fy > wy1:
+                        continue
+                    sx, sy = self.world_to_screen(fx, fy)
+                    draw_feature(self.screen, sx, sy, kind,
+                                 max(2, int(self.zoom * 0.5 * scale)))
+                    drawn += 1
+                    if drawn >= 1600:
+                        return
 
     def apply_lighting(self):
         r, g, b = day_tint(self.time_of_day)
@@ -348,7 +394,7 @@ class Game:
                              (x + pad, y + pad + i * 18))
 
     def draw_hud(self, fps):
-        cond = self.climate.conditions_at(
+        cond = self.cond or self.climate.conditions_at(
             self.player.x, self.player.y, self.time_of_day, self.day)
         paused = "" if self.cycle_running else " (paused)"
         lines = [
@@ -358,12 +404,13 @@ class Game:
             f"{day_phase(self.time_of_day)}{paused}",
             f"{cond['temp_c']:+.0f}°C  {cond['weather']}  "
             f"wind {cond['wind_dir']}  precip {int(cond['precip'] * 100)}%",
+            f"creatures nearby: {len(self.fauna.critters)}",
         ]
         self._panel(lines, 8, 8)
 
         if self.inventory:
             inv = ["Inventory:"] + [f"  {k}: {v}" for k, v in sorted(self.inventory.items())]
-            self._panel(inv, 8, 8 + 4 * 18 + 14)
+            self._panel(inv, 8, 8 + 5 * 18 + 14)
 
         tgt = self.gather_target()
         if tgt:
@@ -388,11 +435,29 @@ class Game:
         pygame.image.save(self.screen, fn)
         print(f"saved {fn}")
 
+    def draw_fog(self):
+        cond = self.cond
+        if not cond:
+            return
+        vis = cond["visibility"]
+        if vis >= 0.85:
+            return
+        fog = pygame.Surface((self.sw, self.sh), pygame.SRCALPHA)
+        shade = 210 if cond["weather"] == "Snow" else 170
+        fog.fill((shade, shade, shade, int((0.85 - vis) * 150)))
+        self.screen.blit(fog, (0, 0))
+
     def render(self, fps=0.0):
         self.draw_world()
         self.apply_lighting()
+        self.draw_flora()          # scatter under entities
         self.draw_floaters()
+        self.fauna.draw(self.screen, self.world_to_screen, self.zoom)
         self.draw_player()
+        self.fireflies.draw(self.screen)
+        self.draw_fog()            # weather haze over the world
+        wind = self.cond["wind"] if self.cond else (0.0, 0.0)
+        self.fx.draw(self.screen, self.sw, self.sh, wind)
         if self.show_minimap:
             self.draw_minimap()
         self.draw_hud(fps)
@@ -468,10 +533,12 @@ def render_demo(seed, out, width=1024, height=640, time_of_day=0.4):
     g = Game(seed=seed, width=width, height=height)
     g.time_of_day = time_of_day
     g.inventory = {"wood": 3, "stone": 1}
-    # Warm up chunk generation so the frame is fully populated.
+    # Warm up chunk generation, then let the living world populate.
     for _ in range(40):
         g.cm.begin_frame()
         g.draw_world()
+    for _ in range(60):
+        g.update(1 / 30)
     g.render(60.0)
     pygame.image.save(g.screen, out)
     pygame.quit()
