@@ -196,11 +196,13 @@ DEFAULTS = dict(
     mountain_level=0.68,   # land elevation -> bare mountain
     peak_level=0.80,       # land elevation -> snow peak
     snowline=0.58,         # cold highlands turn to snow above this
-    color_smooth=2,        # blur radius (tiles) for land biome color blending
+    # Biome-edge dithering: jitter the *climate* (temperature/moisture) with fine
+    # noise before picking the render colour, so borders interleave into organic
+    # transition zones instead of hard lines -- without any blur, and without
+    # touching the elevation that defines crisp coastlines/beaches.
+    biome_dither=0.06,     # strength of the climate jitter (0 = hard edges)
+    dither_scale=8.0,      # tiles per jitter feature (small = fine-grained)
 )
-
-# Biomes whose color edges stay crisp (no blending): water + coastline.
-_SHARP_EDGE_BIOMES = (DEEP_OCEAN, OCEAN, SHALLOW, BEACH)
 
 
 class Chunk:
@@ -224,6 +226,7 @@ class WorldGenerator:
         self.n_temp = PerlinNoise(self.seed + 1013)
         self.n_moist = PerlinNoise(self.seed + 2027)
         self.n_warp = PerlinNoise(self.seed + 7919)
+        self.n_jit = PerlinNoise(self.seed + 9941)  # biome-edge dithering
 
     # -- field math ---------------------------------------------------------
     def _elevation(self, gx, gy):
@@ -276,56 +279,38 @@ class WorldGenerator:
         return classify(elev, temp, moist, p["sea_level"],
                         p["mountain_level"], p["peak_level"], p["snowline"])
 
-    def _smooth_color(self, color, biome):
-        """Blend colors across land biome borders, keeping water/beach crisp.
-
-        A masked separable Gaussian: each blendable tile averages only its
-        blendable neighbours, so colour never bleeds across coastlines.
-        """
-        r = int(self.p["color_smooth"])
-        if r <= 0:
-            return color
-        soft = (~np.isin(biome, _SHARP_EDGE_BIOMES)).astype(np.float32)
-        offs = np.arange(-r, r + 1)
-        sigma = r * 0.6 + 1e-6
-        w = np.exp(-(offs ** 2) / (2 * sigma * sigma))
-        w /= w.sum()
-
-        def blur1d(a, axis):
-            out = np.zeros_like(a)
-            for k, wk in zip(offs, w):
-                out += wk * np.roll(a, k, axis=axis)
-            return out
-
-        m = soft
-        num = blur1d(blur1d(color * m[..., None], 0), 1)
-        den = blur1d(blur1d(m, 0), 1)
-        den = np.where(den > 1e-6, den, 1.0)[..., None]
-        blended = num / den
-        return np.where(soft[..., None] > 0, blended, color)
+    def _dithered_biome(self, gx, gy, elev, temp, moist):
+        """Biome ids for *rendering*: climate jittered with fine noise so borders
+        interleave into organic transition zones. Elevation is left untouched, so
+        coastlines, beaches and peaks stay crisp."""
+        amt = self.p["biome_dither"]
+        if amt <= 0:
+            return self._classify(elev, temp, moist)
+        js = self.p["dither_scale"]
+        j1 = self.n_jit.noise2(gx / js, gy / js)
+        j2 = self.n_jit.noise2(gx / js + 57.0, gy / js - 31.0)
+        tv = np.clip(temp + j1 * amt, 0.0, 1.0)
+        mv = np.clip(moist + j2 * amt, 0.0, 1.0)
+        return self._classify(elev, tv, mv)
 
     # -- chunk generation ---------------------------------------------------
     def generate_chunk(self, cx, cy, size):
-        """Generate one chunk. Padded so hillshade and colour blending are
-        seamless across chunk borders."""
-        pad = max(1, 2 * int(self.p["color_smooth"]))
+        """Generate one chunk. Uses a 1-tile pad so hillshade is seamless."""
         x0, y0 = cx * size, cy * size
-        xs = np.arange(x0 - pad, x0 + size + pad, dtype=np.float64)
-        ys = np.arange(y0 - pad, y0 + size + pad, dtype=np.float64)
+        xs = np.arange(x0 - 1, x0 + size + 1, dtype=np.float64)
+        ys = np.arange(y0 - 1, y0 + size + 1, dtype=np.float64)
         gx, gy = np.meshgrid(xs, ys)  # [row=y, col=x]
 
         elev, temp, moist = self._fields(gx, gy)
-        biome = self._classify(elev, temp, moist)
-
-        color = self.palette[biome].astype(np.float32)
-        color = self._smooth_color(color, biome)
+        biome = self._classify(elev, temp, moist)        # data (hard edges)
+        vbiome = self._dithered_biome(gx, gy, elev, temp, moist)  # render colour
 
         shade = self._hillshade(elev)
         land = elev >= self.p["sea_level"]
         shade = np.where(land, shade, 1.0)[..., None]
-        color = np.clip(color * shade, 0, 255)
+        color = np.clip(self.palette[vbiome].astype(np.float32) * shade, 0, 255)
 
-        s = slice(pad, -pad)
+        s = slice(1, -1)
         return Chunk(
             cx, cy, size,
             biome[s, s].copy(),
