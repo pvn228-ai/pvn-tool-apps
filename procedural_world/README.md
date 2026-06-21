@@ -28,6 +28,8 @@ ever generating the whole thing.
   wind and drifting rain/snow fronts (see `climate.py`).
 - **Living world** — flora, roaming wildlife, weather effects and night fireflies
   in the play mode (see `life.py`).
+- **Save / load** — `F5` saves the realm (seed + player, factions, settlements,
+  armies, camps and AI state) to `world_save.json`; `F9` restores it.
 - **Deterministic terrain** — the same seed always produces the same terrain,
   biomes, flora and settlement placement. (Dynamic state — wildlife, armies and
   evolving weather — runs in real time and is not seed-reproducible.)
@@ -90,6 +92,7 @@ stack-vs-stack against camps and enemy armies). Plus a life layer —
 | `Space` | Attack (creatures, or chip a hostile camp) |
 | `T` / `B` / `G` | At a town: sell goods / buy a heal / swear allegiance |
 | `C` | At an allied town: recruit troops into your warband |
+| `F5` / `F9` | Save / load the game |
 | Mouse wheel | Zoom |
 | `N` | Pause / resume day-night cycle |
 | `,` / `.` | Scrub time of day |

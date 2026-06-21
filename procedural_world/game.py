@@ -20,6 +20,7 @@ Controls
 """
 
 import argparse
+import json
 import math
 import os
 import random
@@ -251,6 +252,10 @@ class Game:
                 self.swear_allegiance()
             elif e.key == pygame.K_c:
                 self.recruit()
+            elif e.key == pygame.K_F5:
+                self.save_game()
+            elif e.key == pygame.K_F9:
+                self.load_game()
             elif e.key == pygame.K_m:
                 self.show_minimap = not self.show_minimap
             elif e.key == pygame.K_h:
@@ -428,6 +433,54 @@ class Game:
         if (camp.x - s.x) ** 2 + (camp.y - s.y) ** 2 < 120 * 120:
             self.bounty = {"faction": s.faction, "camp": camp,
                            "reward": 80 + camp.strength // 4}
+
+    # -- save / load --------------------------------------------------------
+    SAVE_PATH = "world_save.json"
+
+    def save_game(self):
+        data = {
+            "seed": self.seed,
+            "day": self.day, "time_of_day": self.time_of_day,
+            "player": {"x": self.player.x, "y": self.player.y,
+                       "hp": self.hp, "gold": self.gold,
+                       "inventory": self.inventory,
+                       "reputation": {str(k): v for k, v in self.reputation.items()},
+                       "ally": self.ally, "warband": self.warband},
+            "factions": self.factions.save_state(),
+        }
+        try:
+            with open(self.SAVE_PATH, "w") as fh:
+                json.dump(data, fh)
+            self.factions.events.append("Game saved.")
+        except OSError as e:
+            self.factions.events.append(f"Save failed: {e}")
+
+    def load_game(self):
+        if not os.path.exists(self.SAVE_PATH):
+            self.factions.events.append("No save found.")
+            return
+        with open(self.SAVE_PATH) as fh:
+            data = json.load(fh)
+        self.seed = data["seed"]
+        self.gen = WorldGenerator(self.seed)
+        self.cm.reset(self.gen)
+        self.climate = Climate(self.gen)
+        self.flora = FloraField(self.seed)
+        self.fauna.reset(); self.fx.reset(); self.fireflies.reset()
+        self._biome_cache.clear(); self._terr_cache.clear()
+        self._terr_mini_key = None; self._mini_key = None
+        self.factions = FactionWorld(self.seed, CHUNK)
+        self.factions.load_state(self.gen, data["factions"])
+        self.bg = tuple(int(c) for c in self.gen.palette[0])
+        self.day = data["day"]; self.time_of_day = data["time_of_day"]
+        p = data["player"]
+        self.player = Player(p["x"], p["y"])
+        self.hp = p["hp"]; self.alive = True; self.respawn_timer = 0.0
+        self.gold = p["gold"]; self.inventory = dict(p["inventory"])
+        self.reputation = {int(k): v for k, v in p["reputation"].items()}
+        self.ally = p["ally"]; self.warband = dict(p["warband"])
+        self.bounty = None
+        self.factions.events.append("Game loaded.")
 
     # -- warband (player-led troops) ----------------------------------------
     def warband_strength(self):
@@ -988,7 +1041,8 @@ class Game:
             "G .. ally   C .. recruit warband (allied town)",
             "Wheel .. zoom   N .. pause day/night   , . .. time",
             "M .. minimap   F .. factions   R .. new world",
-            "P .. screenshot   H .. toggle help   Esc/Q .. quit",
+            "F5 .. save   F9 .. load   P .. screenshot",
+            "H .. toggle help   Esc/Q .. quit",
         ]
         self._panel(lines, 8, 170)
 
