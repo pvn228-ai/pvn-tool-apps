@@ -58,7 +58,12 @@ day-night cycle, resource gathering, plus a life layer —
   factions, each tracking its own **population, wealth, stockpiles and soldiers**.
   They grow over time and upgrade tiers; their **territory is shown as a light
   colored tint** over claimed chunks, and standing near one shows its stats.
-  The system (`factions.py`) is built to support any number of factions.
+- **AI directors** — each faction has a strategic "brain" with a personality
+  (Expansionist / Warmonger / Merchant / Defender) that sets **stances toward
+  rivals** at their borders, raises and **orders armies** (mass at hostile
+  frontiers vs. defend), and **expands by founding new outposts** so territory
+  grows over time. Press **F** for a faction overview. The system (`factions.py`)
+  supports any number of factions.
 
 | Key | Action |
 |-----|--------|

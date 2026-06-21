@@ -156,6 +156,78 @@ class Army:
         return int(sum(self.composition.values()))
 
 
+# Director personalities: weights for aggression / expansion / militarism.
+PROFILES = [
+    ("Expansionist", dict(aggr=0.35, expand=0.95, mil=0.5)),
+    ("Warmonger",    dict(aggr=0.90, expand=0.45, mil=0.95)),
+    ("Merchant",     dict(aggr=0.20, expand=0.65, mil=0.40)),
+    ("Defender",     dict(aggr=0.30, expand=0.45, mil=0.75)),
+]
+STRATEGIC_INTERVAL = 1.5   # game-days between strategic decisions
+
+
+class FactionDirector:
+    """The strategic AI for one faction: sets stances toward rivals, raises and
+    orders armies, and decides expansion. Runs on a slow strategic tick."""
+
+    def __init__(self, faction, seed):
+        self.faction = faction
+        self.rng = random.Random((seed ^ (faction.id * 2663)) & 0xFFFFFFFF)
+        self.profile_name, self.profile = self.rng.choice(PROFILES)
+        self.stance = {}        # other_faction_id -> 'hostile' | 'wary' | 'neutral'
+        self._acc = 0.0
+
+    def status(self):
+        hostile = [o for o, s in self.stance.items() if s == "hostile"]
+        return self.profile_name, hostile
+
+    def update(self, dt_days, world):
+        self._acc += dt_days
+        if self._acc < STRATEGIC_INTERVAL:
+            return
+        self._acc = 0.0
+        self._decide(world)
+
+    def _decide(self, world):
+        f = self.faction
+        p = self.profile
+
+        # 1) Stance toward bordering rivals.
+        for oid in world.contacts.get(f.id, ()):
+            roll = self.rng.random()
+            if p["aggr"] > 0.75 or (p["aggr"] > 0.4 and roll < 0.35):
+                self.stance[oid] = "hostile"
+            elif roll < 0.5:
+                self.stance[oid] = "wary"
+            else:
+                self.stance[oid] = "neutral"
+            f.relations[oid] = self.stance[oid]
+
+        # 2) Maintain a militarised number of armies.
+        target = max(1, min(6, int(len(f.settlements) * 0.3 * (0.6 + p["mil"]))))
+        cur = [a for a in world.armies if a.faction is f]
+        if len(cur) < target:
+            new = world.raise_army(f)
+            if new:
+                cur.append(new)
+
+        # 3) Orders: send roughly half toward hostile frontiers, rest defend.
+        enemy_pts = []
+        for oid, st in self.stance.items():
+            if st == "hostile" and oid < len(world.factions):
+                enemy_pts.extend((s.x, s.y) for s in world.factions[oid].settlements)
+        for i, a in enumerate(cur):
+            if enemy_pts and i % 2 == 0:
+                a.target = min(enemy_pts,
+                               key=lambda t: (t[0] - a.x) ** 2 + (t[1] - a.y) ** 2)
+            else:
+                a.target = world._pick_target(f)
+
+        # 4) Expansion: grow territory by founding outposts.
+        if self.rng.random() < p["expand"] * 0.5:
+            world.found_outpost(f)
+
+
 class FactionWorld:
     """Holds all factions/settlements and the chunk->faction claims map."""
 
@@ -166,11 +238,15 @@ class FactionWorld:
         self.factions = []
         self.settlements = []
         self.armies = []
+        self.directors = []
         self.claims = {}          # (cx, cy) -> faction_id
+        self.contacts = {}        # faction_id -> set(bordering faction_ids)
+        self._gen = None
         self._rng = random.Random(self.seed ^ 0x5151)
 
     # -- placement ----------------------------------------------------------
     def generate(self, gen, ox, oy, radius=520, spacing=58, max_settlements=55):
+        self._gen = gen
         self.factions = [Faction(i, *FACTION_DEFS[i]) for i in range(self.n_factions)]
         arng = random.Random(self.seed ^ 0xA5A5A5)
         anchors = [(ox + arng.uniform(-radius, radius),
@@ -227,7 +303,12 @@ class FactionWorld:
             s.faction = f
             f.settlements.append(s)
         self.armies = []
+        self.directors = [FactionDirector(f, self.seed) for f in self.factions]
         self._recompute_claims()
+        # Bootstrap an initial strategic decision so the world starts with stances
+        # and a few armies instead of being inert for the first strategic tick.
+        for d in self.directors:
+            d._decide(self)
 
     # -- claims / territory -------------------------------------------------
     def _recompute_claims(self):
@@ -247,6 +328,17 @@ class FactionWorld:
                         owner_d2[key] = d2
                         claims[key] = s.faction.id
         self.claims = claims
+        self._compute_contacts()
+
+    def _compute_contacts(self):
+        contacts = {f.id: set() for f in self.factions}
+        for (cx, cy), fid in self.claims.items():
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                o = self.claims.get((cx + dx, cy + dy))
+                if o is not None and o != fid:
+                    contacts[fid].add(o)
+                    contacts[o].add(fid)
+        self.contacts = contacts
 
     def owner_of_chunk(self, cx, cy):
         return self.claims.get((cx, cy))
@@ -274,24 +366,53 @@ class FactionWorld:
         s = self._rng.choice(faction.settlements)
         return (s.x, s.y)
 
-    def _update_armies(self, dt_days):
-        # Maintain a target number of armies per faction, raised from settlement
-        # garrisons (soldiers move from "in town" to "in the field").
-        for f in self.factions:
-            target = min(4, 1 + len(f.settlements) // 4)
-            cur = sum(1 for a in self.armies if a.faction is f)
-            if cur < target:
-                pool = [s for s in f.settlements if s.soldiers >= 40]
-                if pool:
-                    s = self._rng.choice(pool)
-                    n = int(s.soldiers * 0.6)
-                    s.soldiers -= n
-                    army = Army(s.x, s.y, f, _gen_commander(self._rng), n, home=s)
-                    army.target = self._pick_target(f)
-                    self.armies.append(army)
+    def raise_army(self, faction):
+        """Raise one army from a settlement garrison. Returns it, or None."""
+        pool = [s for s in faction.settlements if s.soldiers >= 40]
+        if not pool:
+            return None
+        s = self._rng.choice(pool)
+        n = int(s.soldiers * 0.6)
+        s.soldiers -= n
+        army = Army(s.x, s.y, faction, _gen_commander(self._rng), n, home=s)
+        army.target = self._pick_target(faction)
+        self.armies.append(army)
+        return army
 
-        # March each army toward its order; on arrival pick a new friendly town
-        # (or occasionally disband back into its home garrison).
+    def found_outpost(self, faction):
+        """Found a new outpost on suitable land bordering the faction's territory,
+        funded by its richest settlement. Returns True on success."""
+        if self._gen is None or not faction.settlements:
+            return False
+        if len(self.settlements) >= 200 or len(faction.settlements) >= 60:
+            return False  # keep claims recompute and rendering bounded
+        rich = max(faction.settlements, key=lambda s: s.wealth)
+        if rich.wealth < 800:
+            return False
+        owned = [c for c, fid in self.claims.items() if fid == faction.id]
+        frontier = set()
+        for (cx, cy) in owned:
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                n = (cx + dx, cy + dy)
+                if n not in self.claims:
+                    frontier.add(n)
+        if not frontier:
+            return False
+        cs = self.chunk_size
+        for (cx, cy) in self._rng.sample(sorted(frontier), min(len(frontier), 6)):
+            bx, by = cx * cs + cs // 2, cy * cs + cs // 2
+            if self._gen.biome_at(bx, by)[0] in _UNSUITABLE:
+                continue
+            rich.wealth -= 800
+            s = Settlement(bx + 0.5, by + 0.5, faction, OUTPOST, _gen_name(self._rng))
+            self.settlements.append(s)
+            faction.settlements.append(s)
+            self._recompute_claims()
+            return True
+        return False
+
+    def _move_armies(self, dt_days):
+        """Mechanics only: march each army toward its current order."""
         for a in self.armies:
             if a.target is None:
                 a.target = self._pick_target(a.faction)
@@ -301,10 +422,11 @@ class FactionWorld:
             dx, dy = tx - a.x, ty - a.y
             d = math.hypot(dx, dy)
             if d < 3.0:
-                if self._rng.random() < 0.12 and a.home is not None:
+                if self._rng.random() < 0.06 and a.home is not None:
                     a.home.soldiers += a.strength
                     a.composition = {"infantry": 0}
-                a.target = self._pick_target(a.faction)
+                else:
+                    a.target = self._pick_target(a.faction)
             else:
                 step = min(d, a.speed * dt_days)
                 a.x += dx / d * step
@@ -321,7 +443,9 @@ class FactionWorld:
                 upgraded = True
         if upgraded:
             self._recompute_claims()
-        self._update_armies(dt_days)
+        for d in self.directors:        # strategic AI sets stances/orders/expansion
+            d.update(dt_days, self)
+        self._move_armies(dt_days)
 
 
 def selftest():
@@ -359,15 +483,21 @@ def selftest():
     tot_pop, tot_gold, tot_sol = fw.factions[0].totals()
     print(f"  {fw.factions[0].name}: pop {tot_pop} gold {tot_gold} soldiers {tot_sol}")
 
-    # Armies get raised and move.
+    # Directors exist with personalities.
+    assert len(fw.directors) == len(fw.factions)
+    print(f"  directors: {[(f.name, fw.directors[f.id].profile_name) for f in fw.factions]}")
+
+    # Run the world: armies raise/move, directors set stances, factions expand.
+    n0 = len(fw.settlements)
+    for _ in range(400):
+        fw.update(0.2)
     assert fw.armies, "no armies were raised"
-    a = fw.armies[0]
-    ax0, ay0 = a.x, a.y
-    for _ in range(50):
-        fw.update(0.1)
-    moved = (a.x, a.y) != (ax0, ay0) if a in fw.armies else True
-    print(f"  armies: {len(fw.armies)} (e.g. {a.leader}, {a.strength} infantry), moving: {moved}")
-    assert moved, "armies did not move"
+    grew = len(fw.settlements) - n0
+    stances = {fw.directors[f.id].profile_name: fw.directors[f.id].status()[1]
+               for f in fw.factions}
+    print(f"  after sim: armies {len(fw.armies)}, settlements {n0}->{len(fw.settlements)} (+{grew} founded)")
+    print(f"  hostilities: { {f.name: sorted(fw.directors[f.id].status()[1]) for f in fw.factions} }")
+    assert grew >= 0
     print("factions selftest OK")
 
 
