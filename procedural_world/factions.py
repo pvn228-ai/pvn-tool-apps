@@ -19,6 +19,9 @@ from worldgen import DEEP_OCEAN, OCEAN, SHALLOW, MOUNTAIN, SNOW_PEAK
 
 _UNSUITABLE = {DEEP_OCEAN, OCEAN, SHALLOW, MOUNTAIN, SNOW_PEAK}
 
+ENGAGE_DIST2 = 4.0 ** 2    # army-vs-army contact distance (squared)
+SIEGE_DIST2 = 3.0 ** 2     # army-vs-settlement siege distance (squared)
+
 # Settlement tiers (data-driven so new tiers are easy to add).
 OUTPOST, TOWN, CITY = 0, 1, 2
 TIERS = [
@@ -138,7 +141,7 @@ class Army:
     stack-vs-stack later.
     """
     __slots__ = ("x", "y", "faction", "leader", "composition", "target",
-                 "speed", "home")
+                 "speed", "home", "_chk")
 
     def __init__(self, x, y, faction, leader, strength, home=None):
         self.x = x
@@ -150,6 +153,7 @@ class Army:
         self.target = None        # (x, y) move order
         self.speed = 120.0        # tiles per game-day
         self.home = home          # settlement it was raised from
+        self._chk = random.uniform(0.0, 0.004)  # staggered terrain-check timer
 
     @property
     def strength(self):
@@ -241,6 +245,7 @@ class FactionWorld:
         self.directors = []
         self.claims = {}          # (cx, cy) -> faction_id
         self.contacts = {}        # faction_id -> set(bordering faction_ids)
+        self.events = []          # recent world events (battles, captures)
         self._gen = None
         self._rng = random.Random(self.seed ^ 0x5151)
 
@@ -303,6 +308,7 @@ class FactionWorld:
             s.faction = f
             f.settlements.append(s)
         self.armies = []
+        self.events = []
         self.directors = [FactionDirector(f, self.seed) for f in self.factions]
         self._recompute_claims()
         # Bootstrap an initial strategic decision so the world starts with stances
@@ -412,7 +418,8 @@ class FactionWorld:
         return False
 
     def _move_armies(self, dt_days):
-        """Mechanics only: march each army toward its current order."""
+        """Mechanics only: march each army toward its current order, with a light
+        throttled nudge so they don't park in water/mountains."""
         for a in self.armies:
             if a.target is None:
                 a.target = self._pick_target(a.faction)
@@ -431,6 +438,91 @@ class FactionWorld:
                 step = min(d, a.speed * dt_days)
                 a.x += dx / d * step
                 a.y += dy / d * step
+            # Occasional terrain check (staggered, ~every 0.004 game-days) to back
+            # out of impassable tiles toward home — cheap straight-line steering.
+            a._chk -= dt_days
+            if a._chk <= 0:
+                a._chk = 0.004
+                if self._gen is not None and a.home is not None:
+                    if self._gen.biome_at(int(a.x), int(a.y))[0] in _UNSUITABLE:
+                        hx, hy = a.home.x - a.x, a.home.y - a.y
+                        hd = math.hypot(hx, hy) or 1.0
+                        a.x += hx / hd * 3.0
+                        a.y += hy / hd * 3.0
+        self.armies = [a for a in self.armies if a.strength > 0]
+
+    # -- combat & conquest --------------------------------------------------
+    def _hostile(self, fa, fb):
+        return (fa.relations.get(fb.id) == "hostile"
+                or fb.relations.get(fa.id) == "hostile")
+
+    def _event(self, msg):
+        self.events.append(msg)
+        if len(self.events) > 12:
+            self.events.pop(0)
+
+    def _battle(self, a, b):
+        sa, sb = a.strength, b.strength
+        if sa <= 0 or sb <= 0:
+            return
+        win, lose = (a, b) if self._rng.random() < sa / (sa + sb) else (b, a)
+        cas = int(min(win.strength * 0.9, lose.strength * 0.6))
+        win.composition = {"infantry": win.strength - cas}
+        lose.composition = {"infantry": 0}
+        win.target = None
+        self._event(f"{win.faction.name} beat {lose.faction.name} in the field "
+                    f"({win.strength} left)")
+
+    def _siege(self, army, s):
+        tier = TIERS[s.tier]
+        defense = s.soldiers * 1.6 + tier["pop_cap"] * 0.02
+        atk = army.strength
+        if self._rng.random() < atk / (atk + defense + 1.0):
+            old = s.faction
+            cas = int(min(atk * 0.9, defense * 0.7))
+            army.composition = {"infantry": atk - cas}
+            old.settlements.remove(s)
+            s.faction = army.faction
+            army.faction.settlements.append(s)
+            s.population *= 0.6
+            s.soldiers = s.population * tier["mil"] * 0.5
+            s.wealth *= 0.5
+            army.target = None
+            self._recompute_claims()
+            self._event(f"{army.faction.name} captured {s.name} from {old.name}!")
+        else:
+            cas = int(min(atk * 0.9, defense * 0.4))
+            army.composition = {"infantry": atk - cas}
+            s.soldiers = max(0.0, s.soldiers - atk * 0.3)
+            self._event(f"{army.faction.name}'s assault on {s.name} was repelled")
+
+    def _resolve_combat(self):
+        # Army vs army (mutually hostile, in contact).
+        armies = self.armies
+        for i in range(len(armies)):
+            a = armies[i]
+            if a.strength <= 0:
+                continue
+            for j in range(i + 1, len(armies)):
+                b = armies[j]
+                if b.strength <= 0 or a.faction is b.faction:
+                    continue
+                if self._hostile(a.faction, b.faction) and \
+                        (a.x - b.x) ** 2 + (a.y - b.y) ** 2 <= ENGAGE_DIST2:
+                    self._battle(a, b)
+                    if a.strength <= 0:
+                        break
+        self.armies = [a for a in self.armies if a.strength > 0]
+        # Army vs settlement (siege/capture).
+        for a in list(self.armies):
+            if a.strength <= 0:
+                continue
+            for s in self.settlements:
+                if s.faction is a.faction or not self._hostile(a.faction, s.faction):
+                    continue
+                if (a.x - s.x) ** 2 + (a.y - s.y) ** 2 <= SIEGE_DIST2:
+                    self._siege(a, s)
+                    break
         self.armies = [a for a in self.armies if a.strength > 0]
 
     # -- simulation ---------------------------------------------------------
@@ -446,6 +538,7 @@ class FactionWorld:
         for d in self.directors:        # strategic AI sets stances/orders/expansion
             d.update(dt_days, self)
         self._move_armies(dt_days)
+        self._resolve_combat()
 
 
 def selftest():
@@ -498,6 +591,30 @@ def selftest():
     print(f"  after sim: armies {len(fw.armies)}, settlements {n0}->{len(fw.settlements)} (+{grew} founded)")
     print(f"  hostilities: { {f.name: sorted(fw.directors[f.id].status()[1]) for f in fw.factions} }")
     assert grew >= 0
+
+    # Combat: force two hostile armies into contact -> one is destroyed.
+    fa, fb = fw.factions[0], fw.factions[1]
+    fa.relations[fb.id] = "hostile"
+    fb.relations[fa.id] = "hostile"
+    from copy import copy
+    A = Army(0, 0, fa, "Test A", 300)
+    B = Army(1, 0, fb, "Test B", 120)
+    fw.armies = [A, B]
+    fw._resolve_combat()
+    survivors = [x for x in fw.armies if x.strength > 0]
+    print(f"  battle: 300 vs 120 -> survivors {[(x.faction.name, x.strength) for x in survivors]}")
+    assert len(survivors) == 1, "battle did not resolve to one survivor"
+
+    # Conquest: army on an enemy settlement can capture it (territory flips).
+    victim = fb.settlements[0]
+    before = victim.faction.name
+    army = Army(victim.x, victim.y, fa, "Sieger", 5000)
+    fw.armies = [army]
+    fw._siege(army, victim)
+    print(f"  siege: {victim.name} {before} -> {victim.faction.name}")
+    assert victim.faction is fa, "capture did not flip ownership"
+    assert any("captured" in e for e in fw.events), "no capture event logged"
+    print(f"  events: {fw.events[-1]}")
     print("factions selftest OK")
 
 

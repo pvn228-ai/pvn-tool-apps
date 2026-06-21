@@ -581,6 +581,22 @@ class Game:
         hint = self.font.render("H: help", True, (220, 220, 220))
         self.screen.blit(hint, (8, self.sh - 22))
 
+    def draw_events(self):
+        ev = self.factions.events
+        if not ev:
+            return
+        lines = ev[-5:]
+        pad = 6
+        w = max(self.font.size(t)[0] for t in lines) + pad * 2
+        h = len(lines) * 16 + pad * 2
+        y = self.sh - 30 - h
+        panel = pygame.Surface((w, h), pygame.SRCALPHA)
+        panel.fill((0, 0, 0, 150))
+        self.screen.blit(panel, (8, y))
+        for i, t in enumerate(lines):
+            self.screen.blit(self.font.render(t, True, (255, 225, 180)),
+                             (8 + pad, y + pad + i * 16))
+
     def draw_help(self):
         lines = [
             "WASD / Arrows .. move",
@@ -626,6 +642,7 @@ class Game:
         if self.show_minimap:
             self.draw_minimap()
         self.draw_hud(fps)
+        self.draw_events()
         if self.show_factions:
             self.draw_factions_panel()
         if self.show_help:
