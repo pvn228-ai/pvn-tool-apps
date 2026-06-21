@@ -31,7 +31,8 @@ import pygame
 from worldgen import WorldGenerator, BIOME_NAMES
 
 CHUNK = 64                 # tiles per chunk edge
-GEN_BUDGET_PER_FRAME = 8   # max chunks generated per frame (keeps panning smooth)
+GEN_BUDGET_PER_FRAME = 4   # max chunks generated per frame (spread cost; scaling
+                           # a chunk at high zoom is the dominant per-chunk cost)
 MAX_CACHED_CHUNKS = 900    # LRU cap on generated chunk biome data (tiny)
 MAX_SCALED_SURFACES = 48   # LRU cap on zoom-scaled chunk surfaces (large)
 DAY_LENGTH = 120.0         # seconds for one full day-night cycle

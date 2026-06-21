@@ -853,16 +853,16 @@ class Game:
             self.screen.blit(txt, (sx - txt.get_width() / 2, sy - 30))
 
     def get_minimap(self):
-        size = 144
+        size = 120
         # Step small enough that neighbouring samples stay on the same landmass
         # (terrain features are ~240 tiles; far coarser just aliases into noise).
         step = max(4, CHUNK // 4)
         # Recomputing the minimap evaluates size*size noise points, so only do it
         # every several steps of travel (quantise the centre) to keep the
         # occasional recompute rare.
-        quant = step * 6
-        cxs = int(round(self.player.x / quant)) * 6
-        cys = int(round(self.player.y / quant)) * 6
+        quant = step * 8
+        cxs = int(round(self.player.x / quant)) * 8
+        cys = int(round(self.player.y / quant)) * 8
         half = size // 2
         key = (cxs, cys, step, self.seed)
         if key == self._mini_key and self._mini_surf is not None:
