@@ -179,6 +179,26 @@ PROFILES = [
 STRATEGIC_INTERVAL = 1.5   # game-days between strategic decisions
 
 
+# Neutral hostile camps (hostile to every faction).
+CAMP_KINDS = [("Bandit Camp",), ("Raider Outpost",), ("Beast Lair",)]
+HOSTILE_TINT = (150, 35, 35)
+
+
+class Camp:
+    """A neutral camp hostile to all factions: occupies an area, raids nearby
+    settlements, and can be cleared by an army."""
+    __slots__ = ("x", "y", "kind", "name", "strength", "radius", "_acc")
+
+    def __init__(self, x, y, kind, strength):
+        self.x = x
+        self.y = y
+        self.kind = kind
+        self.name = kind
+        self.strength = int(strength)
+        self.radius = 1
+        self._acc = random.uniform(0.0, 2.0)
+
+
 class FactionDirector:
     """The strategic AI for one faction: sets stances toward rivals, raises and
     orders armies, and decides expansion. Runs on a slow strategic tick."""
@@ -252,6 +272,8 @@ class FactionWorld:
         self.settlements = []
         self.armies = []
         self.directors = []
+        self.camps = []
+        self.camp_claims = set()   # chunks occupied by hostile camps
         self.claims = {}          # (cx, cy) -> faction_id
         self.claims_version = 0   # bumped whenever claims change (for caches)
         self.contacts = {}        # faction_id -> set(bordering faction_ids)
@@ -323,6 +345,7 @@ class FactionWorld:
         self._victory = False
         self.directors = [FactionDirector(f, self.seed) for f in self.factions]
         self._recompute_claims()
+        self._place_camps(gen, ox, oy, radius)
         # Bootstrap an initial strategic decision so the world starts with stances
         # and a few armies instead of being inert for the first strategic tick.
         for d in self.directors:
@@ -586,6 +609,17 @@ class FactionWorld:
                 if (a.x - s.x) ** 2 + (a.y - s.y) ** 2 <= SIEGE_DIST2:
                     self._siege(a, s)
                     break
+        # Army vs neutral hostile camp.
+        for a in list(self.armies):
+            if a.strength <= 0:
+                continue
+            for c in self.camps:
+                if (a.x - c.x) ** 2 + (a.y - c.y) ** 2 <= SIEGE_DIST2:
+                    self._fight_camp(a, c)
+                    break
+        if any(c.strength <= 0 for c in self.camps):
+            self.camps = [c for c in self.camps if c.strength > 0]
+            self._recompute_camp_claims()
         self.armies = [a for a in self.armies if a.strength > 0]
         self._check_elimination()
 
@@ -599,6 +633,102 @@ class FactionWorld:
             self._victory = True
             self._event(f"{alive[0].name} dominates the realm!")
 
+    # -- neutral hostile camps ----------------------------------------------
+    def _place_camps(self, gen, ox, oy, radius, spacing=92, max_camps=14):
+        cells = []
+        gx0 = int((ox - radius) // spacing * spacing)
+        gy0 = int((oy - radius) // spacing * spacing)
+        cx = gx0
+        while cx <= ox + radius:
+            cy = gy0
+            while cy <= oy + radius:
+                r = random.Random((self.seed ^ 0xC0FFEE ^ (cx * 40499) ^ (cy * 86969))
+                                  & 0xFFFFFFFF)
+                if r.random() < 0.5:
+                    cells.append((cx + r.uniform(spacing * 0.2, spacing * 0.8),
+                                  cy + r.uniform(spacing * 0.2, spacing * 0.8), r))
+                cy += spacing
+            cx += spacing
+        camps = []
+        if cells:
+            ax = np.array([c[0] for c in cells], dtype=np.float64).reshape(1, -1)
+            ay = np.array([c[1] for c in cells], dtype=np.float64).reshape(1, -1)
+            biomes = gen._classify(*gen._fields(ax, ay))[0]
+            for i, (jx, jy, r) in enumerate(cells):
+                if int(biomes[i]) in _UNSUITABLE:
+                    continue
+                if any((jx - s.x) ** 2 + (jy - s.y) ** 2 < 28 * 28
+                       for s in self.settlements):
+                    continue  # keep camps out in the wilderness
+                kind = r.choice(CAMP_KINDS)[0]
+                camps.append(Camp(jx, jy, kind, r.randint(150, 450)))
+        camps.sort(key=lambda c: (c.x - ox) ** 2 + (c.y - oy) ** 2)
+        self.camps = camps[:max_camps]
+        self._recompute_camp_claims()
+
+    def _recompute_camp_claims(self):
+        cs = self.chunk_size
+        occupied = set()
+        for c in self.camps:
+            ccx = int(math.floor(c.x)) // cs
+            ccy = int(math.floor(c.y)) // cs
+            for dx in range(-c.radius, c.radius + 1):
+                for dy in range(-c.radius, c.radius + 1):
+                    if dx * dx + dy * dy <= c.radius * c.radius + c.radius:
+                        occupied.add((ccx + dx, ccy + dy))
+        self.camp_claims = occupied
+
+    def nearest_camp(self, x, y, max_dist=8.0):
+        best, bestd = None, max_dist * max_dist
+        for c in self.camps:
+            d2 = (c.x - x) ** 2 + (c.y - y) ** 2
+            if d2 < bestd:
+                best, bestd = c, d2
+        return best
+
+    def _update_camps(self, dt_days):
+        for c in self.camps:
+            c._acc += dt_days
+            if c._acc < 2.0:
+                continue
+            c._acc = 0.0
+            best, bd = None, 60.0 * 60.0
+            for s in self.settlements:
+                d2 = (s.x - c.x) ** 2 + (s.y - c.y) ** 2
+                if d2 < bd:
+                    best, bd = s, d2
+            if best is None:
+                continue
+            best.soldiers = max(0.0, best.soldiers * 0.8)
+            best.wealth *= 0.9
+            c.strength += 20
+            self._event(f"{c.kind} raided {best.name}")
+            # The victim faction dispatches its nearest army to deal with it.
+            armies = [a for a in self.armies if a.faction is best.faction]
+            if armies:
+                near = min(armies, key=lambda a: (a.x - c.x) ** 2 + (a.y - c.y) ** 2)
+                near.target = (c.x, c.y)
+
+    def _fight_camp(self, army, camp):
+        atk = army.strength
+        defense = camp.strength * 1.3
+        if self._rng.random() < atk / (atk + defense + 1.0):
+            cas = int(min(atk * 0.9, defense * 0.7))
+            self._scale_comp(army, (atk - cas) / max(1, atk))
+            camp.strength = 0
+            army.target = None
+            self._event(f"{army.faction.name} cleared the {camp.kind}!")
+        else:
+            cas = int(min(atk * 0.9, defense * 0.4))
+            self._scale_comp(army, (atk - cas) / max(1, atk))
+            camp.strength = int(camp.strength * 0.93)
+            dx, dy = army.x - camp.x, army.y - camp.y
+            dd = math.hypot(dx, dy) or 1.0
+            reach = SIEGE_DIST2 ** 0.5 + 2.0
+            army.x, army.y = camp.x + dx / dd * reach, camp.y + dy / dd * reach
+            army.target = (army.home.x, army.home.y) if army.home else None
+            self._event(f"{army.faction.name}'s attack on the {camp.kind} failed")
+
     # -- simulation ---------------------------------------------------------
     def update(self, dt_days):
         if dt_days <= 0 or not self.settlements:
@@ -611,6 +741,7 @@ class FactionWorld:
             self._recompute_claims()
         for d in self.directors:        # strategic AI sets stances/orders/expansion
             d.update(dt_days, self)
+        self._update_camps(dt_days)
         self._move_armies(dt_days)
         self._resolve_combat()
 
@@ -701,6 +832,21 @@ def selftest():
     assert victim.faction is fa, "capture did not flip ownership"
     assert any("captured" in e for e in fw.events), "no capture event logged"
     print(f"  events: {fw.events[-1]}")
+
+    # Neutral hostile camps placed and occupying area.
+    print(f"  camps: {len(fw.camps)} ({[c.kind for c in fw.camps[:3]]}...), "
+          f"occupied chunks {len(fw.camp_claims)}")
+    assert fw.camps, "no camps placed"
+    assert fw.camp_claims, "camps occupy no territory"
+    # A strong army clears a camp.
+    camp = fw.camps[0]
+    clearer = Army(camp.x, camp.y, fa, "Hunter", 9000)
+    fw.armies = [clearer]
+    n_before = len(fw.camps)
+    fw._resolve_combat()
+    print(f"  camp clear: {n_before} -> {len(fw.camps)} camps; "
+          f"last event: {fw.events[-1]}")
+    assert len(fw.camps) < n_before, "camp was not cleared"
     print("factions selftest OK")
 
 

@@ -360,14 +360,18 @@ class Game:
         s = self._terr_cache.get(key)
         if s is None:
             s = pygame.Surface((zoom_px, zoom_px), pygame.SRCALPHA)
-            col = self.factions.factions[fid].color
-            s.fill((col[0], col[1], col[2], 55))
+            if fid < 0:                       # neutral hostile camp area
+                s.fill((150, 35, 35, 95))
+            else:
+                col = self.factions.factions[fid].color
+                s.fill((col[0], col[1], col[2], 55))
             self._terr_cache[key] = s
         return s
 
     def draw_territory(self):
         claims = self.factions.claims
-        if not claims:
+        camp_claims = self.factions.camp_claims
+        if not claims and not camp_claims:
             return
         zoom_px = max(1, int(round(CHUNK * self.zoom)))
         wx0, wy0 = self.screen_to_world(0, 0)
@@ -376,11 +380,26 @@ class Game:
         cx1, cy1 = int(wx1 // CHUNK), int(wy1 // CHUNK)
         for cy in range(cy0, cy1 + 1):
             for cx in range(cx0, cx1 + 1):
-                fid = claims.get((cx, cy))
-                if fid is None:
-                    continue
                 sx, sy = self.world_to_screen(cx * CHUNK, cy * CHUNK)
-                self.screen.blit(self._territory_surf(fid, zoom_px), (int(sx), int(sy)))
+                fid = claims.get((cx, cy))
+                if fid is not None:
+                    self.screen.blit(self._territory_surf(fid, zoom_px), (int(sx), int(sy)))
+                if (cx, cy) in camp_claims:
+                    self.screen.blit(self._territory_surf(-1, zoom_px), (int(sx), int(sy)))
+
+    def draw_camps(self):
+        for c in self.factions.camps:
+            sx, sy = self.world_to_screen(c.x, c.y)
+            if sx < -20 or sx > self.sw + 20 or sy < -20 or sy > self.sh + 20:
+                continue
+            ix, iy = int(sx), int(sy)
+            r = 6
+            pygame.draw.line(self.screen, (210, 60, 60), (ix - r, iy - r), (ix + r, iy + r), 3)
+            pygame.draw.line(self.screen, (210, 60, 60), (ix - r, iy + r), (ix + r, iy - r), 3)
+            if self.zoom >= 10:
+                lbl = self.font.render(str(c.strength), True, (255, 200, 200))
+                lbl.set_alpha(230)
+                self.screen.blit(lbl, (ix - lbl.get_width() // 2, iy - r - 16))
 
     def draw_settlements(self):
         for s in self.factions.settlements:
@@ -510,18 +529,24 @@ class Game:
         return self._mini_surf, step, size
 
     def _minimap_territory(self, x0, y0, step, size):
-        key = (x0, y0, step, self.factions.claims_version)
+        key = (x0, y0, step, self.factions.claims_version, len(self.factions.camp_claims))
         if key == self._terr_mini_key and self._terr_mini is not None:
             return self._terr_mini
         surf = pygame.Surface((size, size), pygame.SRCALPHA)
         ppc = CHUNK / step  # minimap pixels per chunk
         d = max(1, int(ppc) + 1)
-        for (cx, cy), fid in self.factions.claims.items():
+
+        def paint(cx, cy, rgba):
             sx = (cx * CHUNK - x0) / step
             sy = (cy * CHUNK - y0) / step
             if -ppc <= sx <= size and -ppc <= sy <= size:
-                col = self.factions.factions[fid].color
-                surf.fill((col[0], col[1], col[2], 110), (int(sx), int(sy), d, d))
+                surf.fill(rgba, (int(sx), int(sy), d, d))
+
+        for (cx, cy), fid in self.factions.claims.items():
+            col = self.factions.factions[fid].color
+            paint(cx, cy, (col[0], col[1], col[2], 110))
+        for (cx, cy) in self.factions.camp_claims:
+            paint(cx, cy, (150, 35, 35, 150))
         self._terr_mini = surf
         self._terr_mini_key = key
         return surf
@@ -597,6 +622,13 @@ class Game:
             self._panel(ainfo, self.sw - 8 - max(self.font.size(t)[0] for t in ainfo) - 12,
                         8 + 6 * 18)
 
+        # Hostile camp info when nearby.
+        camp = self.factions.nearest_camp(self.player.x, self.player.y, 8.0)
+        if camp:
+            cinfo = [f"{camp.kind} (hostile)", f"strength: {camp.strength}"]
+            self._panel(cinfo, self.sw - 8 - max(self.font.size(t)[0] for t in cinfo) - 12,
+                        8 + 11 * 18)
+
         tgt = self.gather_target()
         if tgt:
             prompt = self.bigfont.render(f"[E] gather {tgt[0]}", True, (255, 255, 180))
@@ -657,6 +689,7 @@ class Game:
         self.draw_floaters()
         self.fauna.draw(self.screen, self.world_to_screen, self.zoom)
         self.draw_settlements()
+        self.draw_camps()
         self.draw_armies()
         self.draw_player()
         self.fireflies.draw(self.screen)
