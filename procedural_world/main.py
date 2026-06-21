@@ -32,7 +32,8 @@ from worldgen import WorldGenerator, BIOME_NAMES
 
 CHUNK = 64                 # tiles per chunk edge
 GEN_BUDGET_PER_FRAME = 8   # max chunks generated per frame (keeps panning smooth)
-MAX_CACHED_CHUNKS = 900    # LRU cap on generated chunks
+MAX_CACHED_CHUNKS = 900    # LRU cap on generated chunk biome data (tiny)
+MAX_SCALED_SURFACES = 48   # LRU cap on zoom-scaled chunk surfaces (large)
 DAY_LENGTH = 120.0         # seconds for one full day-night cycle
 
 # Day-night lighting: a multiply color sampled across the day. Values < 255
@@ -99,6 +100,7 @@ class ChunkManager:
         self.scaled = {}    # (cx, cy) -> (zoom_px, Surface)
         self.chunks = {}    # (cx, cy) -> Chunk (biome/field data; for flora etc.)
         self.order = []     # MRU list of keys for LRU eviction
+        self.scaled_order = []  # MRU list for the scaled-surface LRU
         self.budget = 0
 
     def reset(self, generator):
@@ -107,6 +109,7 @@ class ChunkManager:
         self.scaled.clear()
         self.chunks.clear()
         self.order.clear()
+        self.scaled_order.clear()
 
     def begin_frame(self):
         self.budget = GEN_BUDGET_PER_FRAME
@@ -125,6 +128,10 @@ class ChunkManager:
             self.base.pop(old, None)
             self.scaled.pop(old, None)
             self.chunks.pop(old, None)
+            try:
+                self.scaled_order.remove(old)
+            except ValueError:
+                pass
 
     def _make_base(self, key):
         cx, cy = key
@@ -159,6 +166,16 @@ class ChunkManager:
             return cached[1]
         scaled = pygame.transform.scale(base, (zoom_px, zoom_px))
         self.scaled[key] = (zoom_px, scaled)
+        # Scaled surfaces are large ((CHUNK*zoom)^2); keep only a small working
+        # set so memory stays bounded (otherwise it can reach GBs while roaming).
+        try:
+            self.scaled_order.remove(key)
+        except ValueError:
+            pass
+        self.scaled_order.append(key)
+        while len(self.scaled_order) > MAX_SCALED_SURFACES:
+            old = self.scaled_order.pop(0)
+            self.scaled.pop(old, None)
         return scaled
 
 
@@ -170,7 +187,6 @@ class Explorer:
         self.screen = pygame.display.set_mode((width, height), pygame.RESIZABLE)
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("consolas,monospace", 15)
-        self.big = pygame.font.SysFont("consolas,monospace", 17, bold=True)
 
         self.chunk = chunk
         self.seed = seed

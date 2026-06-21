@@ -102,6 +102,8 @@ class Game:
         self.fireflies = Fireflies()
         self.factions = FactionWorld(seed, CHUNK)
         self._terr_cache = {}  # (faction_id, zoom_px) -> translucent Surface
+        self._light_surf = None  # reusable full-screen lighting overlay
+        self._fog_surf = None    # reusable full-screen fog overlay
         self.cond = None  # cached conditions for the player's tile this frame
         self._biome_cache = {}  # (tx, ty) -> biome id, for tiles outside loaded chunks
 
@@ -200,6 +202,8 @@ class Game:
             self.sw, self.sh = e.w, e.h
             self.screen = pygame.display.set_mode((e.w, e.h), pygame.RESIZABLE)
             self._mini_key = None
+            self._light_surf = None
+            self._fog_surf = None
         elif e.type == pygame.KEYDOWN:
             if e.key in (pygame.K_ESCAPE, pygame.K_q):
                 return False
@@ -417,9 +421,10 @@ class Game:
         r, g, b = day_tint(self.time_of_day)
         if r >= 254 and g >= 254 and b >= 254:
             return
-        overlay = pygame.Surface((self.sw, self.sh))
-        overlay.fill((int(r), int(g), int(b)))
-        self.screen.blit(overlay, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
+        if self._light_surf is None:
+            self._light_surf = pygame.Surface((self.sw, self.sh))
+        self._light_surf.fill((int(r), int(g), int(b)))
+        self.screen.blit(self._light_surf, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
 
     def draw_player(self):
         cx, cy = self.sw // 2, self.sh // 2  # player is always centred
@@ -445,15 +450,16 @@ class Game:
             self.screen.blit(txt, (sx - txt.get_width() / 2, sy - 30))
 
     def get_minimap(self):
-        size = 160
+        size = 144
         # Step small enough that neighbouring samples stay on the same landmass
         # (terrain features are ~240 tiles; far coarser just aliases into noise).
         step = max(4, CHUNK // 4)
         # Recomputing the minimap evaluates size*size noise points, so only do it
-        # every few steps of travel (quantise the centre) to avoid frame hitches.
-        quant = step * 4
-        cxs = int(round(self.player.x / quant)) * 4
-        cys = int(round(self.player.y / quant)) * 4
+        # every several steps of travel (quantise the centre) to keep the
+        # occasional recompute rare.
+        quant = step * 6
+        cxs = int(round(self.player.x / quant)) * 6
+        cys = int(round(self.player.y / quant)) * 6
         half = size // 2
         key = (cxs, cys, step, self.seed)
         if key == self._mini_key and self._mini_surf is not None:
@@ -561,10 +567,11 @@ class Game:
         vis = cond["visibility"]
         if vis >= 0.85:
             return
-        fog = pygame.Surface((self.sw, self.sh), pygame.SRCALPHA)
+        if self._fog_surf is None:
+            self._fog_surf = pygame.Surface((self.sw, self.sh), pygame.SRCALPHA)
         shade = 210 if cond["weather"] == "Snow" else 170
-        fog.fill((shade, shade, shade, int((0.85 - vis) * 150)))
-        self.screen.blit(fog, (0, 0))
+        self._fog_surf.fill((shade, shade, shade, int((0.85 - vis) * 150)))
+        self.screen.blit(self._fog_surf, (0, 0))
 
     def render(self, fps=0.0):
         self.draw_world()

@@ -213,6 +213,19 @@ class FactionWorld:
         self.settlements = self.settlements[:max_settlements]
         for f in self.factions:
             f.settlements = [s for s in self.settlements if s.faction is f]
+        # Guarantee every faction has at least one settlement (reassign nearest
+        # from a faction that can spare one).
+        for f in self.factions:
+            if f.settlements:
+                continue
+            donors = [s for s in self.settlements if len(s.faction.settlements) > 1]
+            if not donors:
+                break
+            ax, ay = anchors[f.id]
+            s = min(donors, key=lambda s: (s.x - ax) ** 2 + (s.y - ay) ** 2)
+            s.faction.settlements.remove(s)
+            s.faction = f
+            f.settlements.append(s)
         self.armies = []
         self._recompute_claims()
 
