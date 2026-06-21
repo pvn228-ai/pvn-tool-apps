@@ -117,6 +117,7 @@ class Game:
 
         self.show_minimap = True
         self.show_help = False
+        self.show_factions = False
 
         self.inventory = {}
         self.floaters = []          # transient "+1 wood" popups
@@ -213,6 +214,8 @@ class Game:
                 self.show_minimap = not self.show_minimap
             elif e.key == pygame.K_h:
                 self.show_help = not self.show_help
+            elif e.key == pygame.K_f:
+                self.show_factions = not self.show_factions
             elif e.key == pygame.K_n:
                 self.cycle_running = not self.cycle_running
             elif e.key == pygame.K_COMMA:
@@ -417,6 +420,39 @@ class Game:
                 lbl.set_alpha(230)
                 self.screen.blit(lbl, (ix - lbl.get_width() // 2, iy - r - 16))
 
+    def draw_factions_panel(self):
+        fw = self.factions
+        if not fw.factions:
+            return
+        rows = []
+        for f in fw.factions:
+            pop, gold, sol = f.totals()
+            d = fw.directors[f.id]
+            prof, hostile = d.status()
+            na = sum(1 for a in fw.armies if a.faction is f)
+            host = ", ".join(fw.factions[o].name.split()[0]
+                             for o in hostile if o < len(fw.factions)) or "-"
+            rows.append((f.color,
+                         [f"{f.name}  [{prof}]",
+                          f"  towns {len(f.settlements)}  pop {pop}  gold {gold}",
+                          f"  armies {na}   hostile: {host}"]))
+        pad = 6
+        lines = ["Factions (F)"] + [t for _, r in rows for t in r]
+        w = max(self.font.size(t)[0] for t in lines) + pad * 2
+        h = len(lines) * 18 + pad * 2
+        x = self.sw // 2 - w // 2
+        panel = pygame.Surface((w, h), pygame.SRCALPHA)
+        panel.fill((0, 0, 0, 165))
+        self.screen.blit(panel, (x, 8))
+        self.screen.blit(self.font.render("Factions (F)", True, (240, 240, 240)),
+                         (x + pad, 8 + pad))
+        y = 8 + pad + 18
+        for col, r in rows:
+            self.screen.blit(self.font.render(r[0], True, col), (x + pad, y))
+            self.screen.blit(self.font.render(r[1], True, (225, 225, 225)), (x + pad, y + 18))
+            self.screen.blit(self.font.render(r[2], True, (225, 225, 225)), (x + pad, y + 36))
+            y += 54
+
     def apply_lighting(self):
         r, g, b = day_tint(self.time_of_day)
         if r >= 254 and g >= 254 and b >= 254:
@@ -550,8 +586,8 @@ class Game:
             "WASD / Arrows .. move",
             "E / Space ...... gather    Wheel .. zoom",
             "N .. pause day/night   , . .. scrub time",
-            "M .. minimap   R .. new world   P .. screenshot",
-            "H .. toggle help   Esc/Q .. quit",
+            "M .. minimap   F .. factions   R .. new world",
+            "P .. screenshot   H .. toggle help   Esc/Q .. quit",
         ]
         self._panel(lines, 8, 150)
 
@@ -590,6 +626,8 @@ class Game:
         if self.show_minimap:
             self.draw_minimap()
         self.draw_hud(fps)
+        if self.show_factions:
+            self.draw_factions_panel()
         if self.show_help:
             self.draw_help()
 
