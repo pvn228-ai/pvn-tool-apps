@@ -141,22 +141,28 @@ LAND_GRAZE = {GRASSLAND, SAVANNA, SHRUBLAND, TEMPERATE_FOREST, TAIGA,
 # kind -> properties
 SPECIES = {
     "deer":   dict(color=(150, 110, 70),  size=0.5, speed=2.4, flee=6,  diurnal=True,
-                   biomes=LAND_GRAZE, kind="land"),
+                   biomes=LAND_GRAZE, kind="land", hp=28, dmg=0, aggressive=False,
+                   loot=("meat", "hide")),
     "rabbit": dict(color=(200, 190, 175), size=0.32, speed=3.2, flee=7,  diurnal=True,
-                   biomes={GRASSLAND, SHRUBLAND, TEMPERATE_FOREST, SAVANNA}, kind="land"),
+                   biomes={GRASSLAND, SHRUBLAND, TEMPERATE_FOREST, SAVANNA}, kind="land",
+                   hp=10, dmg=0, aggressive=False, loot=("meat",)),
     "wolf":   dict(color=(110, 110, 120), size=0.5, speed=3.0, flee=0,  diurnal=False,
-                   biomes={TEMPERATE_FOREST, TAIGA, GRASSLAND, TUNDRA}, kind="land"),
+                   biomes={TEMPERATE_FOREST, TAIGA, GRASSLAND, TUNDRA}, kind="land",
+                   hp=42, dmg=9, aggressive=True, loot=("hide", "fang")),
     "camel":  dict(color=(196, 168, 110), size=0.6, speed=1.8, flee=4,  diurnal=True,
-                   biomes={DESERT}, kind="land"),
+                   biomes={DESERT}, kind="land", hp=46, dmg=0, aggressive=False,
+                   loot=("hide",)),
     "fish":   dict(color=(120, 200, 230), size=0.3, speed=2.6, flee=5,  diurnal=True,
-                   biomes=WATER, kind="water"),
+                   biomes=WATER, kind="water", hp=6, dmg=0, aggressive=False,
+                   loot=("fish",)),
     "bird":   dict(color=(60, 60, 70),    size=0.3, speed=4.5, flee=0,  diurnal=True,
-                   biomes=None, kind="air"),
+                   biomes=None, kind="air", hp=6, dmg=0, aggressive=False,
+                   loot=()),
 }
 
 
 class Critter:
-    __slots__ = ("x", "y", "h", "timer", "spec", "name")
+    __slots__ = ("x", "y", "h", "timer", "spec", "name", "hp", "atk_cd")
 
     def __init__(self, x, y, name, spec):
         self.x, self.y = x, y
@@ -164,6 +170,8 @@ class Critter:
         self.timer = random.uniform(0.5, 2.5)
         self.spec = spec
         self.name = name
+        self.hp = spec["hp"]
+        self.atk_cd = 0.0
 
 
 class Fauna:
@@ -212,6 +220,7 @@ class Fauna:
         # Move.
         for c in self.critters:
             s = c.spec
+            c.atk_cd = max(0.0, c.atk_cd - dt)
             c.timer -= dt
             if c.timer <= 0:
                 c.h = random.uniform(0, 2 * math.pi)
@@ -222,6 +231,14 @@ class Fauna:
                 if d < s["flee"]:
                     c.h = math.atan2(c.y - py, c.x - px)
                     speed *= 1.9
+            elif s["aggressive"] and getattr(game, "alive", True):
+                d = math.hypot(px - c.x, py - c.y)
+                if d < 12.0:                      # hunt the player
+                    c.h = math.atan2(py - c.y, px - c.x)
+                    speed *= 1.5
+                    if d < 1.4 and c.atk_cd <= 0.0:
+                        game.hurt(s["dmg"], f"a {c.name}")
+                        c.atk_cd = 0.8
             nx = c.x + math.cos(c.h) * speed * dt
             ny = c.y + math.sin(c.h) * speed * dt
             if s["kind"] == "air":

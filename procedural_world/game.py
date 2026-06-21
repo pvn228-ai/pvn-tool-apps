@@ -7,7 +7,8 @@ same streaming chunk renderer as the explorer (main.py).
 Controls
 --------
   WASD / Arrows .... move
-  E / Space ........ interact (gather from the tile or an adjacent feature)
+  E ................ gather (from the tile or an adjacent feature)
+  Space ............ attack (creatures, or chip a hostile camp)
   Mouse wheel ...... zoom
   N ................ pause / resume day-night cycle
   , / . ............ scrub time of day
@@ -122,8 +123,18 @@ class Game:
         self.show_factions = False
 
         self.inventory = {}
-        self.floaters = []          # transient "+1 wood" popups
+        self.gold = 0
+        self.floaters = []          # transient "+1 wood" / "-dmg" popups
         self._gather_timer = 0.0
+        # Player survival / combat.
+        self.max_hp = 100.0
+        self.hp = 100.0
+        self.alive = True
+        self.respawn_timer = 0.0
+        self.attack_cd = 0.0
+        self.attack_power = 22.0
+        self.attack_range = 1.9
+        self._since_hit = 99.0      # seconds since last took damage (for regen)
         self._mini_surf = None
         self._mini_key = None
 
@@ -197,6 +208,9 @@ class Game:
         self.player = Player(sx, sy)
         self.factions.generate(self.gen, self.player.x, self.player.y)
         self.floaters.clear()
+        self.hp = self.max_hp
+        self.alive = True
+        self.respawn_timer = 0.0
 
     def handle_event(self, e):
         if e.type == pygame.QUIT:
@@ -210,8 +224,10 @@ class Game:
         elif e.type == pygame.KEYDOWN:
             if e.key in (pygame.K_ESCAPE, pygame.K_q):
                 return False
-            elif e.key in (pygame.K_e, pygame.K_SPACE):
+            elif e.key == pygame.K_e:
                 self.try_gather()
+            elif e.key == pygame.K_SPACE:
+                self.attack()
             elif e.key == pygame.K_m:
                 self.show_minimap = not self.show_minimap
             elif e.key == pygame.K_h:
@@ -242,21 +258,38 @@ class Game:
             if self.time_of_day < prev:
                 self.day += 1
         self._gather_timer = max(0.0, self._gather_timer - dt)
+        self.attack_cd = max(0.0, self.attack_cd - dt)
+        self._since_hit += dt
+
+        # Death & respawn.
+        if not self.alive:
+            self.respawn_timer -= dt
+            if self.respawn_timer <= 0:
+                self._respawn()
+        else:
+            # Slow health regen when out of combat.
+            if self.hp < self.max_hp and self._since_hit > 4.0:
+                self.hp = min(self.max_hp, self.hp + 6.0 * dt)
+            # Hostile camps harry anyone lingering in their area.
+            camp = self.factions.nearest_camp(self.player.x, self.player.y, 5.5)
+            if camp:
+                self.hurt(7.0 * dt, f"the {camp.kind}")
 
         keys = pygame.key.get_pressed()
-        dx = (keys[pygame.K_d] or keys[pygame.K_RIGHT]) - (keys[pygame.K_a] or keys[pygame.K_LEFT])
-        dy = (keys[pygame.K_s] or keys[pygame.K_DOWN]) - (keys[pygame.K_w] or keys[pygame.K_UP])
-        if dx or dy:
-            mag = math.hypot(dx, dy)
-            dirx, diry = dx / mag, dy / mag
-            self.player.fx, self.player.fy = dirx, diry
-            biome = self.biome_id(self.player.x, self.player.y)
-            speed = BASE_SPEED * TERRAIN_SPEED.get(biome, 1.0) * dt
-            self._move(dirx * speed, diry * speed)
-
-        # If continuously held, gather on a repeating cooldown.
-        if (keys[pygame.K_e] or keys[pygame.K_SPACE]) and self._gather_timer == 0.0:
-            self.try_gather()
+        if self.alive:
+            dx = (keys[pygame.K_d] or keys[pygame.K_RIGHT]) - (keys[pygame.K_a] or keys[pygame.K_LEFT])
+            dy = (keys[pygame.K_s] or keys[pygame.K_DOWN]) - (keys[pygame.K_w] or keys[pygame.K_UP])
+            if dx or dy:
+                mag = math.hypot(dx, dy)
+                dirx, diry = dx / mag, dy / mag
+                self.player.fx, self.player.fy = dirx, diry
+                biome = self.biome_id(self.player.x, self.player.y)
+                speed = BASE_SPEED * TERRAIN_SPEED.get(biome, 1.0) * dt
+                self._move(dirx * speed, diry * speed)
+            if keys[pygame.K_e] and self._gather_timer == 0.0:
+                self.try_gather()
+            if keys[pygame.K_SPACE] and self.attack_cd == 0.0:
+                self.attack()
 
         for f in self.floaters:
             f["life"] -= dt
@@ -314,6 +347,68 @@ class Game:
             "color": RESOURCE_COLOR.get(res, (255, 255, 255)), "life": 1.0,
         })
         self._gather_timer = GATHER_COOLDOWN
+
+    # -- combat & survival --------------------------------------------------
+    def _floater(self, x, y, text, color):
+        self.floaters.append({"x": x, "y": y, "text": text, "color": color, "life": 1.0})
+
+    def hurt(self, amount, source=""):
+        if not self.alive or amount <= 0:
+            return
+        self.hp -= amount
+        self._since_hit = 0.0
+        if self.hp <= 0:
+            self.hp = 0
+            self.alive = False
+            self.respawn_timer = 3.0
+            self.factions.events.append(f"You were slain by {source}." if source
+                                        else "You died.")
+            if len(self.factions.events) > 12:
+                self.factions.events.pop(0)
+
+    def _respawn(self):
+        self.alive = True
+        self.hp = self.max_hp
+        dropped = self.gold // 3
+        self.gold -= dropped
+        s = self.factions.nearest_settlement(self.player.x, self.player.y, 1e9)
+        if s is not None:
+            self.player.x, self.player.y = s.x + 1.0, s.y + 1.0
+        self._floater(self.player.x, self.player.y, "respawned", (200, 230, 255))
+
+    def attack(self):
+        if self.attack_cd > 0.0 or not self.alive:
+            return
+        self.attack_cd = 0.45
+        px, py = self.player.x, self.player.y
+        rng2 = self.attack_range ** 2
+        # Nearest creature in reach.
+        target = None
+        bestd = rng2
+        for c in self.fauna.critters:
+            d2 = (c.x - px) ** 2 + (c.y - py) ** 2
+            if d2 < bestd:
+                target, bestd = c, d2
+        if target is not None:
+            target.hp -= self.attack_power
+            self._floater(target.x, target.y, f"-{int(self.attack_power)}", (255, 160, 120))
+            if target.hp <= 0:
+                for res in target.spec["loot"]:
+                    self.inventory[res] = self.inventory.get(res, 0) + 1
+                self.fauna.critters.remove(target)
+                self._floater(target.x, target.y, f"slew {target.name}", (255, 230, 150))
+            return
+        # Otherwise, strike a hostile camp you're standing in.
+        camp = self.factions.nearest_camp(px, py, self.attack_range + 1.0)
+        if camp is not None:
+            camp.strength = max(0, camp.strength - int(self.attack_power * 0.5))
+            self._floater(camp.x, camp.y, f"-{int(self.attack_power*0.5)}", (255, 160, 120))
+            self.hurt(5.0, f"the {camp.kind}")
+            if camp.strength <= 0:
+                self.factions.camps.remove(camp)
+                self.factions._recompute_camp_claims()
+                self.gold += 50
+                self.factions.events.append(f"You cleared a {camp.kind}! (+50g)")
 
     # -- rendering ----------------------------------------------------------
     def draw_world(self):
@@ -486,17 +581,30 @@ class Game:
     def draw_player(self):
         cx, cy = self.sw // 2, self.sh // 2  # player is always centred
         rad = int(max(6, min(20, self.zoom * 0.55)))
+        if not self.alive:
+            pygame.draw.circle(self.screen, (110, 110, 120), (cx, cy), rad)
+            x = self.bigfont.render("X", True, (40, 40, 40))
+            self.screen.blit(x, (cx - x.get_width() // 2, cy - x.get_height() // 2))
+            return
         # shadow
         shadow = pygame.Surface((rad * 2, rad), pygame.SRCALPHA)
         pygame.draw.ellipse(shadow, (0, 0, 0, 90), shadow.get_rect())
         self.screen.blit(shadow, (cx - rad, cy + rad // 2))
-        # body
-        pygame.draw.circle(self.screen, (245, 245, 250), (cx, cy), rad)
+        # body (flashes red briefly after taking a hit)
+        body = (255, 150, 150) if self._since_hit < 0.15 else (245, 245, 250)
+        pygame.draw.circle(self.screen, body, (cx, cy), rad)
         pygame.draw.circle(self.screen, (30, 30, 40), (cx, cy), rad, 2)
         # facing indicator (eyes)
         ex = cx + int(self.player.fx * rad * 0.45)
         ey = cy + int(self.player.fy * rad * 0.45)
         pygame.draw.circle(self.screen, (40, 60, 120), (ex, ey), max(2, rad // 4))
+        # health ring when hurt
+        if self.hp < self.max_hp:
+            frac = self.hp / self.max_hp
+            col = (90, 200, 90) if frac > 0.5 else (230, 200, 70) if frac > 0.25 else (220, 70, 70)
+            pygame.draw.arc(self.screen, col,
+                            (cx - rad - 4, cy - rad - 4, (rad + 4) * 2, (rad + 4) * 2),
+                            1.5708, 1.5708 + 6.283 * frac, 3)
 
     def draw_floaters(self):
         for f in self.floaters:
@@ -591,9 +699,25 @@ class Game:
         ]
         self._panel(lines, 8, 8)
 
+        # Health bar + gold.
+        by = 8 + 5 * 18 + 12
+        bw, bh = 150, 14
+        pygame.draw.rect(self.screen, (40, 20, 20), (8, by, bw, bh))
+        frac = max(0.0, self.hp / self.max_hp)
+        col = (90, 200, 90) if frac > 0.5 else (230, 200, 70) if frac > 0.25 else (220, 70, 70)
+        pygame.draw.rect(self.screen, col, (8, by, int(bw * frac), bh))
+        pygame.draw.rect(self.screen, (230, 230, 230), (8, by, bw, bh), 1)
+        hp_txt = self.font.render(f"HP {int(self.hp)}/{int(self.max_hp)}   gold {self.gold}",
+                                  True, (245, 245, 245))
+        self.screen.blit(hp_txt, (12, by - 1))
+
         if self.inventory:
             inv = ["Inventory:"] + [f"  {k}: {v}" for k, v in sorted(self.inventory.items())]
-            self._panel(inv, 8, 8 + 5 * 18 + 14)
+            self._panel(inv, 8, by + bh + 8)
+
+        if not self.alive:
+            msg = self.bigfont.render("You died — respawning...", True, (255, 180, 180))
+            self.screen.blit(msg, (self.sw // 2 - msg.get_width() // 2, self.sh // 2 - 80))
 
         # Settlement info when standing near one.
         near = self.factions.nearest_settlement(self.player.x, self.player.y, 9.0)
@@ -655,13 +779,13 @@ class Game:
 
     def draw_help(self):
         lines = [
-            "WASD / Arrows .. move",
-            "E / Space ...... gather    Wheel .. zoom",
-            "N .. pause day/night   , . .. scrub time",
+            "WASD / Arrows .. move      E .. gather",
+            "Space .. attack (creatures / hostile camps)",
+            "Wheel .. zoom   N .. pause day/night   , . .. time",
             "M .. minimap   F .. factions   R .. new world",
             "P .. screenshot   H .. toggle help   Esc/Q .. quit",
         ]
-        self._panel(lines, 8, 150)
+        self._panel(lines, 8, 170)
 
     def save_screenshot(self):
         fn = f"play_seed{self.seed}_{int(time.time())}.png"
