@@ -133,6 +133,8 @@ class Game:
         self.reputation = {}        # faction_id -> reputation (0..100)
         self.ally = None            # faction_id the player is allied with
         self.bounty = None          # {faction, camp, reward}
+        self.warband = {"infantry": 0, "cavalry": 0, "archers": 0}  # troops you lead
+        self._wb_cd = 0.0           # warband engagement cooldown
         self.floaters = []          # transient "+1 wood" / "-dmg" popups
         self._gather_timer = 0.0
         # Player survival / combat.
@@ -223,6 +225,7 @@ class Game:
         self.reputation = {}
         self.ally = None
         self.bounty = None
+        self.warband = {"infantry": 0, "cavalry": 0, "archers": 0}
 
     def handle_event(self, e):
         if e.type == pygame.QUIT:
@@ -246,6 +249,8 @@ class Game:
                 self.buy_heal()
             elif e.key == pygame.K_g:
                 self.swear_allegiance()
+            elif e.key == pygame.K_c:
+                self.recruit()
             elif e.key == pygame.K_m:
                 self.show_minimap = not self.show_minimap
             elif e.key == pygame.K_h:
@@ -293,6 +298,7 @@ class Game:
             if camp:
                 self.hurt(7.0 * dt, f"the {camp.kind}")
             self._update_bounty()
+            self._warband_combat(dt)
 
         keys = pygame.key.get_pressed()
         if self.alive:
@@ -422,6 +428,90 @@ class Game:
         if (camp.x - s.x) ** 2 + (camp.y - s.y) ** 2 < 120 * 120:
             self.bounty = {"faction": s.faction, "camp": camp,
                            "reward": 80 + camp.strength // 4}
+
+    # -- warband (player-led troops) ----------------------------------------
+    def warband_strength(self):
+        return int(sum(self.warband.values()))
+
+    def _scale_warband(self, keep):
+        self.warband = {k: int(v * keep) for k, v in self.warband.items()}
+
+    def recruit(self):
+        """Recruit troops from a town you're allied with (or well-regarded by)."""
+        s = self.factions.nearest_settlement(self.player.x, self.player.y, TRADE_RANGE)
+        if s is None:
+            return
+        fid = s.faction.id
+        if self.ally != fid and self.reputation.get(fid, 0) < ALLY_REP:
+            return
+        cost = 60
+        if self.gold < cost or s.soldiers < 10:
+            return
+        n = int(min(s.soldiers * 0.5, 25))
+        if n < 1:
+            return
+        self.gold -= cost
+        s.soldiers -= n
+        for k, v in self.factions._make_composition(n, s.x, s.y).items():
+            self.warband[k] = self.warband.get(k, 0) + v
+        self._floater(self.player.x, self.player.y, f"recruited {n}", (200, 220, 255))
+
+    def _is_enemy_army(self, a):
+        if self.ally is None or a.faction.id == self.ally:
+            return False
+        ally = self.factions.factions[self.ally]
+        return (ally.relations.get(a.faction.id) == "hostile"
+                or a.faction.relations.get(self.ally) == "hostile")
+
+    def _warband_combat(self, dt):
+        if self._wb_cd > 0:
+            self._wb_cd = max(0.0, self._wb_cd - dt)
+            return
+        ws = self.warband_strength()
+        if ws <= 0:
+            return
+        px, py = self.player.x, self.player.y
+        rng2 = 4.5 ** 2
+        # Prefer a hostile camp in reach, else an enemy army.
+        camp = self.factions.nearest_camp(px, py, 4.5)
+        if camp is not None:
+            self._wb_cd = 1.0
+            deff = camp.strength * 1.2
+            if random.random() < ws / (ws + deff + 1):
+                self._scale_warband((ws - int(min(ws * 0.8, deff * 0.6))) / max(1, ws))
+                self.factions.camps.remove(camp)
+                self.factions._recompute_camp_claims()
+                reward = 60
+                if self.bounty and self.bounty["camp"] is camp:
+                    reward += self.bounty["reward"]
+                    self.bounty = None
+                self.gold += reward
+                if self.ally is not None:
+                    self._add_rep(self.factions.factions[self.ally], 5)
+                self.factions.events.append(f"Your warband razed a {camp.kind}! (+{reward}g)")
+            else:
+                self._scale_warband((ws - int(min(ws * 0.8, deff * 0.4))) / max(1, ws))
+                camp.strength = int(camp.strength * 0.9)
+            return
+        for a in self.factions.armies:
+            if self._is_enemy_army(a) and (a.x - px) ** 2 + (a.y - py) ** 2 <= rng2:
+                self._wb_cd = 1.0
+                es = a.strength
+                if random.random() < ws / (ws + es + 1):
+                    self._scale_warband((ws - int(min(ws * 0.8, es * 0.6))) / max(1, ws))
+                    a.composition = {"infantry": 0}
+                    if self.ally is not None:
+                        self._add_rep(self.factions.factions[self.ally], 4)
+                    self.factions.events.append(
+                        f"Your warband defeated {a.faction.name}'s army!")
+                else:
+                    self._scale_warband((ws - int(min(ws * 0.8, es * 0.6))) / max(1, ws))
+                    self._scale_army_comp(a, 0.7)
+                break
+
+    @staticmethod
+    def _scale_army_comp(a, keep):
+        a.composition = {k: int(v * keep) for k, v in a.composition.items()}
 
     # -- combat & survival --------------------------------------------------
     def _floater(self, x, y, text, color):
@@ -669,6 +759,18 @@ class Game:
             x = self.bigfont.render("X", True, (40, 40, 40))
             self.screen.blit(x, (cx - x.get_width() // 2, cy - x.get_height() // 2))
             return
+        # Warband: a ring of soldier dots around the player.
+        ws = self.warband_strength()
+        if ws > 0:
+            col = self.factions.factions[self.ally].color if self.ally is not None \
+                else (210, 210, 210)
+            n = min(14, 3 + ws // 25)
+            ring = rad + 10
+            for i in range(n):
+                a = i / n * 6.283
+                dx, dy = int(math.cos(a) * ring), int(math.sin(a) * ring)
+                pygame.draw.circle(self.screen, col, (cx + dx, cy + dy), max(2, rad // 3))
+                pygame.draw.circle(self.screen, (20, 20, 25), (cx + dx, cy + dy), max(2, rad // 3), 1)
         # shadow
         shadow = pygame.Surface((rad * 2, rad), pygame.SRCALPHA)
         pygame.draw.ellipse(shadow, (0, 0, 0, 90), shadow.get_rect())
@@ -782,6 +884,10 @@ class Game:
         ]
         if self.ally is not None:
             lines.append(f"allied with {self.factions.factions[self.ally].name}")
+        if self.warband_strength() > 0:
+            w = self.warband
+            lines.append(f"warband {self.warband_strength()}  "
+                         f"(i{w.get('infantry',0)} c{w.get('cavalry',0)} a{w.get('archers',0)})")
         self._panel(lines, 8, 8)
 
         # Health bar + gold.
@@ -816,8 +922,9 @@ class Game:
                 f"reputation: {rep}/100",
                 f"pop {int(near.population)}   soldiers {int(near.soldiers)}",
                 f"wealth {int(near.wealth)}g",
-                "[T] sell goods   [B] heal 30g"
-                + ("   [G] ally" if rep >= ALLY_REP and self.ally != near.faction.id else ""),
+                "[T] sell  [B] heal  "
+                + ("[G] ally  " if rep >= ALLY_REP and self.ally != near.faction.id else "")
+                + ("[C] recruit 60g" if (self.ally == near.faction.id or rep >= ALLY_REP) else ""),
             ]
             self._panel(info, self.sw - 8 - max(self.font.size(t)[0] for t in info) - 12, 8)
 
@@ -877,7 +984,8 @@ class Game:
     def draw_help(self):
         lines = [
             "WASD / Arrows .. move      E .. gather",
-            "Space .. attack    T .. sell    B .. heal    G .. ally",
+            "Space .. attack   T .. sell   B .. heal",
+            "G .. ally   C .. recruit warband (allied town)",
             "Wheel .. zoom   N .. pause day/night   , . .. time",
             "M .. minimap   F .. factions   R .. new world",
             "P .. screenshot   H .. toggle help   Esc/Q .. quit",

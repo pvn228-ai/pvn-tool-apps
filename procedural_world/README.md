@@ -48,7 +48,9 @@ day-night cycle, resource gathering, **survival & combat** (health, fight wildli
 and hostile camps with `Space`, take damage from predators/raiders, die & respawn,
 loot fallen creatures), and an **economy** (sell goods at towns for gold, build
 **reputation**, take **bounties** to clear camps, and **swear allegiance** to a
-faction), plus a life layer —
+faction), and you can grow from a lone adventurer into a **commander** —
+**recruit a warband** at allied towns (troops that follow you and fight
+stack-vs-stack against camps and enemy armies). Plus a life layer —
 
 - **Flora** — deterministic scatter of trees, pines, cacti, rocks, bushes, grass
   and flowers, placed by biome (forests are dense, deserts get cacti, etc.).
@@ -87,6 +89,7 @@ faction), plus a life layer —
 | `E` | Gather from the tile or an adjacent feature |
 | `Space` | Attack (creatures, or chip a hostile camp) |
 | `T` / `B` / `G` | At a town: sell goods / buy a heal / swear allegiance |
+| `C` | At an allied town: recruit troops into your warband |
 | Mouse wheel | Zoom |
 | `N` | Pause / resume day-night cycle |
 | `,` / `.` | Scrub time of day |
