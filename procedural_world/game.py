@@ -100,6 +100,7 @@ class Game:
         self.fx = WeatherFX()
         self.fireflies = Fireflies()
         self.cond = None  # cached conditions for the player's tile this frame
+        self._biome_cache = {}  # (tx, ty) -> biome id, for tiles outside loaded chunks
 
         self.zoom = 14.0
         self.min_zoom, self.max_zoom = 6.0, 40.0
@@ -124,7 +125,20 @@ class Game:
 
     # -- world helpers ------------------------------------------------------
     def biome_id(self, x, y):
-        return self.gen.biome_at(int(math.floor(x)), int(math.floor(y)))[0]
+        tx, ty = int(math.floor(x)), int(math.floor(y))
+        # Fast path: read from an already-generated chunk (O(1), no noise).
+        ch = self.cm.chunks.get((tx // CHUNK, ty // CHUNK))
+        if ch is not None:
+            return int(ch.biome[ty % CHUNK, tx % CHUNK])
+        # Fallback for tiles outside loaded chunks: memoized noise query.
+        key = (tx, ty)
+        v = self._biome_cache.get(key)
+        if v is None:
+            v = self.gen.biome_at(tx, ty)[0]
+            if len(self._biome_cache) > 50000:
+                self._biome_cache.clear()
+            self._biome_cache[key] = v
+        return v
 
     def walkable(self, x, y):
         return self.biome_id(x, y) not in BLOCKED
@@ -165,6 +179,7 @@ class Game:
         self.fauna.reset()
         self.fx.reset()
         self.fireflies.reset()
+        self._biome_cache.clear()
         self._mini_key = None
         self.bg = tuple(int(c) for c in self.gen.palette[0])
         sx, sy = self.find_spawn()
@@ -353,13 +368,16 @@ class Game:
             self.screen.blit(txt, (sx - txt.get_width() / 2, sy - 30))
 
     def get_minimap(self):
-        size = 190
+        size = 160
         # Step small enough that neighbouring samples stay on the same landmass
         # (terrain features are ~240 tiles; far coarser just aliases into noise).
         step = max(4, CHUNK // 4)
+        # Recomputing the minimap evaluates size*size noise points, so only do it
+        # every few steps of travel (quantise the centre) to avoid frame hitches.
+        quant = step * 4
+        cxs = int(round(self.player.x / quant)) * 4
+        cys = int(round(self.player.y / quant)) * 4
         half = size // 2
-        cxs = int(round(self.player.x / step))
-        cys = int(round(self.player.y / step))
         key = (cxs, cys, step, self.seed)
         if key == self._mini_key and self._mini_surf is not None:
             return self._mini_surf, step, size
