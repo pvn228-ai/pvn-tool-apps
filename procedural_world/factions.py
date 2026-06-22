@@ -274,6 +274,7 @@ class FactionWorld:
         self.directors = []
         self.camps = []
         self.camp_claims = set()   # chunks occupied by hostile camps
+        self.player_faction = None  # faction id founded/led by the player
         self.claims = {}          # (cx, cy) -> faction_id
         self.claims_version = 0   # bumped whenever claims change (for caches)
         self.contacts = {}        # faction_id -> set(bordering faction_ids)
@@ -343,6 +344,7 @@ class FactionWorld:
         self.armies = []
         self.events = []
         self._victory = False
+        self.player_faction = None
         self.directors = [FactionDirector(f, self.seed) for f in self.factions]
         self._recompute_claims()
         self._place_camps(gen, ox, oy, radius)
@@ -351,12 +353,33 @@ class FactionWorld:
         for d in self.directors:
             d._decide(self)
 
+    # -- player-founded faction ---------------------------------------------
+    def found_player_faction(self, name="Your Realm", color=(235, 235, 245)):
+        fid = len(self.factions)
+        f = Faction(fid, name, tuple(color))
+        self.factions.append(f)
+        self.n_factions += 1
+        self.directors.append(FactionDirector(f, self.seed))  # your realm acts too
+        self.player_faction = fid
+        return f
+
+    def capture_for(self, faction, s):
+        if s.faction is faction:
+            return
+        s.faction.settlements.remove(s)
+        s.faction = faction
+        faction.settlements.append(s)
+        s.population *= 0.7
+        s.wealth *= 0.6
+        self._recompute_claims()
+
     # -- persistence --------------------------------------------------------
     def save_state(self):
         si = {id(s): i for i, s in enumerate(self.settlements)}
         return {
             "claims_version": self.claims_version,
             "victory": self._victory,
+            "player_faction": self.player_faction,
             "events": list(self.events),
             "factions": [{"id": f.id, "name": f.name, "color": list(f.color),
                           "relations": dict(f.relations), "dead": f.dead}
@@ -415,6 +438,7 @@ class FactionWorld:
             self.directors.append(d)
         self.events = list(data["events"])
         self._victory = data["victory"]
+        self.player_faction = data.get("player_faction")
         self._recompute_claims()
         self._recompute_camp_claims()
 
