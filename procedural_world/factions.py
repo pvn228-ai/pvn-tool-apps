@@ -85,6 +85,7 @@ class Faction:
         self.color = color
         self.settlements = []
         self.relations = {}   # other_faction_id -> attitude (future use)
+        self.lords = []       # named commanders available to lead armies
         self.dead = False
 
     def totals(self):
@@ -92,6 +93,19 @@ class Faction:
         gold = sum(s.wealth for s in self.settlements)
         sol = sum(s.soldiers for s in self.settlements)
         return int(pop), int(gold), int(sol)
+
+
+class Lord:
+    """A named commander. Leads an army; can be captured or slain in battle.
+    A faction with no free lords cannot raise new armies."""
+    __slots__ = ("id", "name", "faction", "prowess", "status")
+
+    def __init__(self, lid, name, faction, prowess):
+        self.id = lid
+        self.name = name
+        self.faction = faction
+        self.prowess = prowess          # combat multiplier for the army they lead
+        self.status = "idle"            # idle | leading | captured
 
 
 class Settlement:
@@ -150,7 +164,7 @@ class Army:
     stack-vs-stack later.
     """
     __slots__ = ("x", "y", "faction", "leader", "composition", "target",
-                 "speed", "home", "_chk")
+                 "speed", "home", "_chk", "lord")
 
     def __init__(self, x, y, faction, leader, strength, home=None):
         self.x = x
@@ -163,6 +177,7 @@ class Army:
         self.speed = 120.0        # tiles per game-day
         self.home = home          # settlement it was raised from
         self._chk = random.uniform(0.0, 0.004)  # staggered terrain-check timer
+        self.lord = None          # the Lord commanding this army
 
     @property
     def strength(self):
@@ -275,6 +290,8 @@ class FactionWorld:
         self.camps = []
         self.camp_claims = set()   # chunks occupied by hostile camps
         self.player_faction = None  # faction id founded/led by the player
+        self._next_lord_id = 0
+        self._lord_acc = 0.0
         self.claims = {}          # (cx, cy) -> faction_id
         self.claims_version = 0   # bumped whenever claims change (for caches)
         self.contacts = {}        # faction_id -> set(bordering faction_ids)
@@ -345,6 +362,10 @@ class FactionWorld:
         self.events = []
         self._victory = False
         self.player_faction = None
+        self._next_lord_id = 0
+        for f in self.factions:                       # named commanders per faction
+            for _ in range(max(2, len(f.settlements) // 6)):
+                self._make_lord(f)
         self.directors = [FactionDirector(f, self.seed) for f in self.factions]
         self._recompute_claims()
         self._place_camps(gen, ox, oy, radius)
@@ -359,6 +380,8 @@ class FactionWorld:
         f = Faction(fid, name, tuple(color))
         self.factions.append(f)
         self.n_factions += 1
+        for _ in range(2):
+            self._make_lord(f)
         self.directors.append(FactionDirector(f, self.seed))  # your realm acts too
         self.player_faction = fid
         return f
@@ -380,6 +403,10 @@ class FactionWorld:
             "claims_version": self.claims_version,
             "victory": self._victory,
             "player_faction": self.player_faction,
+            "next_lord_id": self._next_lord_id,
+            "lords": [{"id": l.id, "name": l.name, "faction": l.faction.id,
+                       "prowess": l.prowess, "status": l.status}
+                      for f in self.factions for l in f.lords],
             "events": list(self.events),
             "factions": [{"id": f.id, "name": f.name, "color": list(f.color),
                           "relations": dict(f.relations), "dead": f.dead}
@@ -394,7 +421,8 @@ class FactionWorld:
             "armies": [{"x": a.x, "y": a.y, "faction": a.faction.id, "leader": a.leader,
                         "composition": dict(a.composition),
                         "target": list(a.target) if a.target else None,
-                        "home": si.get(id(a.home))}
+                        "home": si.get(id(a.home)),
+                        "lord": a.lord.id if a.lord else None}
                        for a in self.armies],
             "directors": [{"profile": d.profile_name, "stance": dict(d.stance),
                            "acc": d._acc} for d in self.directors],
@@ -418,6 +446,14 @@ class FactionWorld:
             self.settlements.append(s)
         for f in self.factions:
             f.settlements = [s for s in self.settlements if s.faction is f]
+        # Lords.
+        self._next_lord_id = data.get("next_lord_id", 0)
+        lord_map = {}
+        for ld in data.get("lords", []):
+            lo = Lord(ld["id"], ld["name"], self.factions[ld["faction"]], ld["prowess"])
+            lo.status = ld["status"]
+            self.factions[ld["faction"]].lords.append(lo)
+            lord_map[ld["id"]] = lo
         self.camps = [Camp(cd["x"], cd["y"], cd["kind"], cd["strength"])
                       for cd in data["camps"]]
         self.armies = []
@@ -426,6 +462,7 @@ class FactionWorld:
             a.composition = dict(ad["composition"])
             a.target = tuple(ad["target"]) if ad["target"] else None
             a.home = self.settlements[ad["home"]] if ad["home"] is not None else None
+            a.lord = lord_map.get(ad.get("lord"))
             self.armies.append(a)
         _profiles = dict(PROFILES)
         self.directors = []
@@ -515,19 +552,44 @@ class FactionWorld:
             arch = n - inf - cav
         return {"infantry": inf, "cavalry": cav, "archers": arch}
 
+    def _make_lord(self, faction):
+        lord = Lord(self._next_lord_id, _gen_commander(self._rng), faction,
+                    round(self._rng.uniform(0.85, 1.30), 2))
+        self._next_lord_id += 1
+        faction.lords.append(lord)
+        return lord
+
     def raise_army(self, faction):
-        """Raise one army from a settlement garrison. Returns it, or None."""
+        """Raise an army led by a free lord. No free lord -> can't field one."""
+        lord = next((l for l in faction.lords if l.status == "idle"), None)
+        if lord is None:
+            return None
         pool = [s for s in faction.settlements if s.soldiers >= 40]
         if not pool:
             return None
         s = self._rng.choice(pool)
         n = int(s.soldiers * 0.6)
         s.soldiers -= n
-        army = Army(s.x, s.y, faction, _gen_commander(self._rng), n, home=s)
+        army = Army(s.x, s.y, faction, lord.name, n, home=s)
         army.composition = self._make_composition(n, s.x, s.y)
+        army.lord = lord
+        lord.status = "leading"
         army.target = self._pick_target(faction)
         self.armies.append(army)
         return army
+
+    def _defeat_army(self, army, victor=None):
+        """Resolve a destroyed army's lord: captured by the victor, or slain."""
+        lord = army.lord
+        army.lord = None
+        if lord is None:
+            return
+        captured = victor is not None and self._rng.random() < 0.5
+        lord.status = "captured" if captured else "killed"
+        if lord in lord.faction.lords:        # removed from the faction either way
+            lord.faction.lords.remove(lord)
+        verb = "captured" if captured else "slain"
+        self._event(f"Lord {lord.name} of {lord.faction.name} was {verb}!")
 
     def found_outpost(self, faction):
         """Found a new outpost on suitable land bordering the faction's territory,
@@ -576,6 +638,9 @@ class FactionWorld:
                 if self._rng.random() < 0.06 and a.home is not None:
                     a.home.soldiers += a.strength
                     a.composition = {"infantry": 0}
+                    if a.lord is not None:        # lord returns home, free again
+                        a.lord.status = "idle"
+                        a.lord = None
                 else:
                     a.target = self._pick_target(a.faction)
             else:
@@ -623,7 +688,8 @@ class FactionWorld:
         aa = a.composition.get("archers", 0)
         bonus = 0.4 * (ai * cc + ac * ca + aa * ci) \
             - 0.4 * (ai * ca + ac * ci + aa * cc)
-        return max(1.0, sa + bonus)
+        prowess = a.lord.prowess if a.lord else 1.0
+        return max(1.0, (sa + bonus) * prowess)
 
     @staticmethod
     def _scale_comp(army, keep):
@@ -637,6 +703,7 @@ class FactionWorld:
         cas = int(min(win.strength * 0.9, lose.strength * 0.6))
         self._scale_comp(win, (win.strength - cas) / max(1, win.strength))
         lose.composition = {"infantry": 0}
+        self._defeat_army(lose, victor=win.faction)
         win.target = None
         self._event(f"{win.faction.name} beat {lose.faction.name} in the field "
                     f"({win.strength} left)")
@@ -664,6 +731,9 @@ class FactionWorld:
         else:
             cas = int(min(atk * 0.9, defense * 0.4))
             self._scale_comp(army, (atk - cas) / max(1, atk))
+            if army.strength <= 0:
+                self._defeat_army(army, victor=s.faction)
+                return
             s.soldiers = max(0.0, s.soldiers - atk * 0.3)
             # Retreat out of siege range so it doesn't re-assault every tick.
             dx, dy = army.x - s.x, army.y - s.y
@@ -813,6 +883,9 @@ class FactionWorld:
             cas = int(min(atk * 0.9, defense * 0.4))
             self._scale_comp(army, (atk - cas) / max(1, atk))
             camp.strength = int(camp.strength * 0.93)
+            if army.strength <= 0:
+                self._defeat_army(army, victor=None)
+                return
             dx, dy = army.x - camp.x, army.y - camp.y
             dd = math.hypot(dx, dy) or 1.0
             reach = SIEGE_DIST2 ** 0.5 + 2.0
@@ -830,11 +903,26 @@ class FactionWorld:
                 upgraded = True
         if upgraded:
             self._recompute_claims()
+        self._replenish_lords(dt_days)
         for d in self.directors:        # strategic AI sets stances/orders/expansion
             d.update(dt_days, self)
         self._update_camps(dt_days)
         self._move_armies(dt_days)
         self._resolve_combat()
+
+    def _replenish_lords(self, dt_days):
+        # New nobles/heirs rise over time toward a cap, so losing lords is a
+        # temporary cripple rather than permanent.
+        self._lord_acc += dt_days
+        if self._lord_acc < 3.0:
+            return
+        self._lord_acc = 0.0
+        for f in self.factions:
+            if not f.settlements:
+                continue
+            cap = max(2, len(f.settlements) // 6)
+            if len(f.lords) < cap:
+                self._make_lord(f)
 
 
 def selftest():
@@ -938,6 +1026,26 @@ def selftest():
     print(f"  camp clear: {n_before} -> {len(fw.camps)} camps; "
           f"last event: {fw.events[-1]}")
     assert len(fw.camps) < n_before, "camp was not cleared"
+
+    # Named lords: armies are led by lords; defeating an army removes its lord,
+    # and a faction with no free lords cannot field new armies.
+    fw2 = FactionWorld(11, 64, n_factions=3)
+    fw2.generate(g, 0, 0)
+    assert all(f.lords for f in fw2.factions), "factions have no lords"
+    fa2 = fw2.factions[0]
+    lords0 = len(fa2.lords)
+    army = fw2.raise_army(fa2)
+    assert army is not None and army.lord is not None, "army has no lord"
+    print(f"  lords: {fa2.name} has {lords0} lords; raised army led by "
+          f"{army.lord.name} (prowess {army.lord.prowess})")
+    # Defeat that army -> its lord is captured or slain.
+    fw2._defeat_army(army, victor=fw2.factions[1])
+    assert army.lord is None
+    # Exhaust all lords -> cannot raise.
+    for l in list(fa2.lords):
+        l.status = "captured"
+    assert fw2.raise_army(fa2) is None, "raised army with no free lord"
+    print("  faction with no free lords cannot raise armies: OK")
     print("factions selftest OK")
 
 

@@ -74,6 +74,10 @@ map, grows, and wars like any other. Plus a life layer —
   frontiers vs. defend), and **expands by founding new outposts** so territory
   grows over time. Press **F** for a faction overview. The system (`factions.py`)
   supports any number of factions.
+- **Named lords** — armies are led by named commanders with a combat **prowess**
+  rating. Defeating an army **captures or slays** its lord, and a faction with no
+  free lords can't field new armies — so killing off a rival's commanders cripples
+  it (new heirs rise over time). Mount-and-Blade-style.
 - **War & conquest** — hostile armies fight **stack-vs-stack** (no per-soldier
   units) with **troop composition** (infantry > cavalry > archers > infantry, and
   armies are flavored by where they're raised — open land favors cavalry, woods
