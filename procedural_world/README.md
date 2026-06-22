@@ -28,6 +28,8 @@ ever generating the whole thing.
   wind and drifting rain/snow fronts (see `climate.py`).
 - **Living world** — flora, roaming wildlife, weather effects and night fireflies
   in the play mode (see `life.py`).
+- **Save / load** — `F5` saves the realm (seed + player, factions, settlements,
+  armies, camps and AI state) to `world_save.json`; `F9` restores it.
 - **Deterministic terrain** — the same seed always produces the same terrain,
   biomes, flora and settlement placement. (Dynamic state — wildlife, armies and
   evolving weather — runs in real time and is not seed-reproducible.)
@@ -44,7 +46,13 @@ python game.py                 # play: walk a character around the world
 ## Play prototype (`game.py`)
 
 A controllable character in a **living world**: terrain collision, follow-camera,
-day-night cycle, resource gathering, plus a life layer —
+day-night cycle, resource gathering, **survival & combat** (health, fight wildlife
+and hostile camps with `Space`, take damage from predators/raiders, die & respawn,
+loot fallen creatures), and an **economy** (sell goods at towns for gold, build
+**reputation**, take **bounties** to clear camps, and **swear allegiance** to a
+faction), and you can grow from a lone adventurer into a **commander** —
+**recruit a warband** at allied towns (troops that follow you and fight
+stack-vs-stack against camps and enemy armies). Plus a life layer —
 
 - **Flora** — deterministic scatter of trees, pines, cacti, rocks, bushes, grass
   and flowers, placed by biome (forests are dense, deserts get cacti, etc.).
@@ -80,7 +88,11 @@ day-night cycle, resource gathering, plus a life layer —
 | Key | Action |
 |-----|--------|
 | `WASD` / Arrows | Move (camera follows) |
-| `E` / `Space` | Gather from the tile or an adjacent feature |
+| `E` | Gather from the tile or an adjacent feature |
+| `Space` | Attack (creatures, or chip a hostile camp) |
+| `T` / `B` / `G` | At a town: sell goods / buy a heal / swear allegiance |
+| `C` | At an allied town: recruit troops into your warband |
+| `F5` / `F9` | Save / load the game |
 | Mouse wheel | Zoom |
 | `N` | Pause / resume day-night cycle |
 | `,` / `.` | Scrub time of day |

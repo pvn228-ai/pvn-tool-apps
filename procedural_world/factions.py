@@ -351,6 +351,73 @@ class FactionWorld:
         for d in self.directors:
             d._decide(self)
 
+    # -- persistence --------------------------------------------------------
+    def save_state(self):
+        si = {id(s): i for i, s in enumerate(self.settlements)}
+        return {
+            "claims_version": self.claims_version,
+            "victory": self._victory,
+            "events": list(self.events),
+            "factions": [{"id": f.id, "name": f.name, "color": list(f.color),
+                          "relations": dict(f.relations), "dead": f.dead}
+                         for f in self.factions],
+            "settlements": [{"x": s.x, "y": s.y, "faction": s.faction.id,
+                             "tier": s.tier, "name": s.name,
+                             "population": s.population, "wealth": s.wealth,
+                             "soldiers": s.soldiers, "stock": dict(s.stock)}
+                            for s in self.settlements],
+            "camps": [{"x": c.x, "y": c.y, "kind": c.kind, "strength": c.strength}
+                      for c in self.camps],
+            "armies": [{"x": a.x, "y": a.y, "faction": a.faction.id, "leader": a.leader,
+                        "composition": dict(a.composition),
+                        "target": list(a.target) if a.target else None,
+                        "home": si.get(id(a.home))}
+                       for a in self.armies],
+            "directors": [{"profile": d.profile_name, "stance": dict(d.stance),
+                           "acc": d._acc} for d in self.directors],
+        }
+
+    def load_state(self, gen, data):
+        self._gen = gen
+        self.factions = []
+        for fd in data["factions"]:
+            f = Faction(fd["id"], fd["name"], tuple(fd["color"]))
+            f.relations = {int(k): v for k, v in fd["relations"].items()}
+            f.dead = fd["dead"]
+            self.factions.append(f)
+        self.n_factions = len(self.factions)
+        self.settlements = []
+        for sd in data["settlements"]:
+            s = Settlement(sd["x"], sd["y"], self.factions[sd["faction"]],
+                           sd["tier"], sd["name"])
+            s.population, s.wealth, s.soldiers = sd["population"], sd["wealth"], sd["soldiers"]
+            s.stock = dict(sd["stock"])
+            self.settlements.append(s)
+        for f in self.factions:
+            f.settlements = [s for s in self.settlements if s.faction is f]
+        self.camps = [Camp(cd["x"], cd["y"], cd["kind"], cd["strength"])
+                      for cd in data["camps"]]
+        self.armies = []
+        for ad in data["armies"]:
+            a = Army(ad["x"], ad["y"], self.factions[ad["faction"]], ad["leader"], 0)
+            a.composition = dict(ad["composition"])
+            a.target = tuple(ad["target"]) if ad["target"] else None
+            a.home = self.settlements[ad["home"]] if ad["home"] is not None else None
+            self.armies.append(a)
+        _profiles = dict(PROFILES)
+        self.directors = []
+        for f, dd in zip(self.factions, data["directors"]):
+            d = FactionDirector(f, self.seed)
+            d.profile_name = dd["profile"]
+            d.profile = _profiles.get(dd["profile"], d.profile)
+            d.stance = {int(k): v for k, v in dd["stance"].items()}
+            d._acc = dd["acc"]
+            self.directors.append(d)
+        self.events = list(data["events"])
+        self._victory = data["victory"]
+        self._recompute_claims()
+        self._recompute_camp_claims()
+
     # -- claims / territory -------------------------------------------------
     def _recompute_claims(self):
         claims = {}
