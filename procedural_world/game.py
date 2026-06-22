@@ -590,6 +590,9 @@ class Game:
                 if random.random() < ws / (ws + es + 1):
                     self._scale_warband((ws - int(min(ws * 0.8, es * 0.6))) / max(1, ws))
                     a.composition = {"infantry": 0}
+                    pf = self.factions.player_faction
+                    victor = self.factions.factions[pf] if pf is not None else None
+                    self.factions._defeat_army(a, victor=victor)  # capture/kill its lord
                     if self.ally is not None:
                         self._add_rep(self.factions.factions[self.ally], 4)
                     self.factions.events.append(
@@ -809,12 +812,14 @@ class Game:
             d = fw.directors[f.id]
             prof, hostile = d.status()
             na = sum(1 for a in fw.armies if a.faction is f)
+            free_lords = sum(1 for l in f.lords if l.status == "idle")
             host = ", ".join(fw.factions[o].name.split()[0]
                              for o in hostile if o < len(fw.factions)) or "-"
             rows.append((f.color,
                          [f"{f.name}  [{prof}]",
                           f"  towns {len(f.settlements)}  pop {pop}  gold {gold}",
-                          f"  armies {na}   hostile: {host}"]))
+                          f"  armies {na}   lords {len(f.lords)} ({free_lords} free)",
+                          f"  hostile: {host}"]))
         pad = 6
         lines = ["Factions (F)"] + [t for _, r in rows for t in r]
         w = max(self.font.size(t)[0] for t in lines) + pad * 2
@@ -828,9 +833,10 @@ class Game:
         y = 8 + pad + 18
         for col, r in rows:
             self.screen.blit(self.font.render(r[0], True, col), (x + pad, y))
-            self.screen.blit(self.font.render(r[1], True, (225, 225, 225)), (x + pad, y + 18))
-            self.screen.blit(self.font.render(r[2], True, (225, 225, 225)), (x + pad, y + 36))
-            y += 54
+            for k in range(1, len(r)):
+                self.screen.blit(self.font.render(r[k], True, (225, 225, 225)),
+                                 (x + pad, y + 18 * k))
+            y += 18 * len(r) + 4
 
     def apply_lighting(self):
         r, g, b = day_tint(self.time_of_day)
@@ -1039,8 +1045,9 @@ class Game:
         army = self.factions.nearest_army(self.player.x, self.player.y, 7.0)
         if army:
             c = army.composition
+            prow = f"  (prowess {army.lord.prowess})" if army.lord else ""
             ainfo = [
-                f"Army of {army.leader}",
+                f"Lord {army.leader}{prow}",
                 f"faction: {army.faction.name}",
                 f"strength: {army.strength}",
                 f"  inf {c.get('infantry', 0)}  cav {c.get('cavalry', 0)}"
