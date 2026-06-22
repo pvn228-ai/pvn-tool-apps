@@ -52,7 +52,9 @@ loot fallen creatures), and an **economy** (sell goods at towns for gold, build
 **reputation**, take **bounties** to clear camps, and **swear allegiance** to a
 faction), and you can grow from a lone adventurer into a **commander** —
 **recruit a warband** at allied towns (troops that follow you and fight
-stack-vs-stack against camps and enemy armies). Plus a life layer —
+stack-vs-stack against camps and enemy armies), and ultimately **found your own
+realm** (`K`) by storming a settlement — your faction then holds territory on the
+map, grows, and wars like any other. Plus a life layer —
 
 - **Flora** — deterministic scatter of trees, pines, cacti, rocks, bushes, grass
   and flowers, placed by biome (forests are dense, deserts get cacti, etc.).
@@ -92,6 +94,7 @@ stack-vs-stack against camps and enemy armies). Plus a life layer —
 | `Space` | Attack (creatures, or chip a hostile camp) |
 | `T` / `B` / `G` | At a town: sell goods / buy a heal / swear allegiance |
 | `C` | At an allied town: recruit troops into your warband |
+| `K` | Claim a settlement with your warband (found / grow your own realm) |
 | `F5` / `F9` | Save / load the game |
 | Mouse wheel | Zoom |
 | `N` | Pause / resume day-night cycle |

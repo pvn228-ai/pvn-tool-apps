@@ -9,6 +9,10 @@ Controls
   WASD / Arrows .... move
   E ................ gather (from the tile or an adjacent feature)
   Space ............ attack (creatures, or chip a hostile camp)
+  T / B / G ........ at a town: sell / heal / swear allegiance
+  C ................ recruit a warband (allied town)
+  K ................ claim a settlement with your warband (found/grow your realm)
+  F5 / F9 .......... save / load
   Mouse wheel ...... zoom
   N ................ pause / resume day-night cycle
   , / . ............ scrub time of day
@@ -252,6 +256,8 @@ class Game:
                 self.swear_allegiance()
             elif e.key == pygame.K_c:
                 self.recruit()
+            elif e.key == pygame.K_k:
+                self.claim_settlement()
             elif e.key == pygame.K_F5:
                 self.save_game()
             elif e.key == pygame.K_F9:
@@ -510,11 +516,42 @@ class Game:
         self._floater(self.player.x, self.player.y, f"recruited {n}", (200, 220, 255))
 
     def _is_enemy_army(self, a):
-        if self.ally is None or a.faction.id == self.ally:
-            return False
-        ally = self.factions.factions[self.ally]
-        return (ally.relations.get(a.faction.id) == "hostile"
-                or a.faction.relations.get(self.ally) == "hostile")
+        refs = [r for r in (self.ally, self.factions.player_faction) if r is not None]
+        for rid in refs:
+            if a.faction.id == rid:
+                continue
+            rel = self.factions.factions[rid].relations
+            if rel.get(a.faction.id) == "hostile" or a.faction.relations.get(rid) == "hostile":
+                return True
+        return False
+
+    def claim_settlement(self):
+        """Assault a settlement with your warband; on success, found your own
+        faction (or annex the town into it)."""
+        s = self.factions.nearest_settlement(self.player.x, self.player.y, TRADE_RANGE)
+        if s is None:
+            return
+        pf = self.factions.player_faction
+        if (pf is not None and s.faction.id == pf) or s.faction.id == self.ally:
+            return
+        ws = self.warband_strength()
+        if ws <= 0:
+            self._floater(self.player.x, self.player.y, "need a warband", (255, 180, 180))
+            return
+        deff = s.soldiers * 1.25 + TIERS[s.tier]["pop_cap"] * 0.015
+        if random.random() < ws / (ws + deff + 1):
+            self._scale_warband((ws - int(min(ws * 0.8, deff * 0.6))) / max(1, ws))
+            if pf is None:
+                f = self.factions.found_player_faction()
+                self.factions.events.append(f"You founded {f.name}, seizing {s.name}!")
+            else:
+                f = self.factions.factions[pf]
+                self.factions.events.append(f"{f.name} annexed {s.name}!")
+            self.factions.capture_for(f, s)
+        else:
+            self._scale_warband((ws - int(min(ws * 0.8, deff * 0.4))) / max(1, ws))
+            s.soldiers = max(0.0, s.soldiers - ws * 0.3)
+            self.factions.events.append(f"Your assault on {s.name} was repelled")
 
     def _warband_combat(self, dt):
         if self._wb_cd > 0:
@@ -815,8 +852,9 @@ class Game:
         # Warband: a ring of soldier dots around the player.
         ws = self.warband_strength()
         if ws > 0:
-            col = self.factions.factions[self.ally].color if self.ally is not None \
-                else (210, 210, 210)
+            banner = self.factions.player_faction if self.factions.player_faction is not None \
+                else self.ally
+            col = self.factions.factions[banner].color if banner is not None else (210, 210, 210)
             n = min(14, 3 + ws // 25)
             ring = rad + 10
             for i in range(n):
@@ -935,7 +973,12 @@ class Game:
             f"wind {cond['wind_dir']}  precip {int(cond['precip'] * 100)}%",
             f"creatures nearby: {len(self.fauna.critters)}",
         ]
-        if self.ally is not None:
+        pf = self.factions.player_faction
+        if pf is not None:
+            f = self.factions.factions[pf]
+            na = sum(1 for a in self.factions.armies if a.faction.id == pf)
+            lines.append(f"YOUR REALM: {len(f.settlements)} towns, {na} armies")
+        elif self.ally is not None:
             lines.append(f"allied with {self.factions.factions[self.ally].name}")
         if self.warband_strength() > 0:
             w = self.warband
@@ -977,7 +1020,10 @@ class Game:
                 f"wealth {int(near.wealth)}g",
                 "[T] sell  [B] heal  "
                 + ("[G] ally  " if rep >= ALLY_REP and self.ally != near.faction.id else "")
-                + ("[C] recruit 60g" if (self.ally == near.faction.id or rep >= ALLY_REP) else ""),
+                + ("[C] recruit  " if (self.ally == near.faction.id or rep >= ALLY_REP) else "")
+                + ("[K] claim" if self.warband_strength() > 0
+                   and near.faction.id != self.ally
+                   and near.faction.id != self.factions.player_faction else ""),
             ]
             self._panel(info, self.sw - 8 - max(self.font.size(t)[0] for t in info) - 12, 8)
 
@@ -1038,7 +1084,7 @@ class Game:
         lines = [
             "WASD / Arrows .. move      E .. gather",
             "Space .. attack   T .. sell   B .. heal",
-            "G .. ally   C .. recruit warband (allied town)",
+            "G .. ally   C .. recruit   K .. claim/found realm",
             "Wheel .. zoom   N .. pause day/night   , . .. time",
             "M .. minimap   F .. factions   R .. new world",
             "F5 .. save   F9 .. load   P .. screenshot",
