@@ -1,0 +1,60 @@
+PVN'S WARBAND TWEAKER v1.0.0
+
+First publish-ready release.
+
+Highlights
+- Use one Quick Edit tab for any whole-number battle size of 30 or more,
+  battle continuation after player knock-out, common player/performance options,
+  and relevant module gameplay toggles.
+- Search and edit every rgl_config.txt setting.
+- Edit categorized module.ini tweaks while keeping resource loading rows in a
+  separate collapsed section.
+- Tweak tournament bet choices, winner denars, renown, and XP through guarded
+  compiled-menu controls.
+- Tweak ladder and siege-tower construction formulas while keeping displayed
+  estimates and actual build times synchronized.
+- Tweak weekly village/castle/town rents, prosperity scaling, the fief tax/income
+  divisor, and the weekly income interval.
+- Tweak base party size, renown-per-slot scaling, garrison wage discounts, food
+  consumption, and mercenary/village-volunteer refresh timing.
+- Tweak real Native post-battle gold and XP formulas, including level scaling,
+  gold share, caps, percentage-roll ranges, and reward divisors.
+- Tweak village recruitment pools/prices, tavern mercenary counts, prisoner
+  pricing, and enable prisoner sales through every tavern keeper.
+- Edit new-campaign player attributes and all named starting skills, plus each
+  skill's module-wide maximum level.
+- Edit party templates with module-aware troop selection and validation.
+- Create, clone, and edit items with decoded item flags and capabilities.
+- Distinguish items by compiled numeric index and clone the exact selected source,
+  including Native's known duplicate tutorial/voulge item IDs.
+- Create and clone compiled troops with unique normalized IDs. New records are
+  appended so every existing troop index remains unchanged.
+- Fully edit compiled troops, including flags, faction, upgrades, attributes,
+  proficiencies, all 42 skills, all 64 inventory slots, and both face codes.
+- Use the Face Workshop to safely randomize a fixed face or two-face spawn range
+  from valid same-type presets already present in the selected module.
+- Resolve Troop Editor and upgrade-path labels directly from parsed troop records,
+  preventing valid troops from appearing as "unknown troop" during module load.
+- Edit remaining compiled module text files in the guarded raw editor.
+
+Release verification
+- 50 automated tests pass, including injected second-file save failure and
+  byte-for-byte rollback coverage.
+- The stock Native 1.174 module passes a dedicated read-only audit: 1,078 troops,
+  63 party templates, 624 items, 34 factions, 42 skills, 35 compiled text files,
+  all 8 guarded battle-continuation mission triggers, and every gameplay patch—
+  including siege, fief, timing, party, wage, battle-gold, and XP controls—
+  performs a reversible in-memory round trip.
+- Native 1.174 is the canonical gameplay-tweak baseline. Other modules can use
+  general editors and matching guarded formulas, but unfamiliar signatures are
+  explicitly reported as unsupported instead of being modified by guesswork.
+- The packaged Windows executable passes GUI startup and responsiveness checks.
+
+Safety
+- Close Warband before saving changes.
+- Clone original modules before editing them.
+- Every save creates a timestamped backup beside the changed file.
+- Multi-file gameplay saves are prepared together and roll back all earlier
+  replacements if any later file fails.
+- The executable is not code-signed, so Windows may show Unknown Publisher.
+- This is an unofficial utility and is not affiliated with TaleWorlds.

@@ -1,33 +1,46 @@
-# Advanced Name Generator
+# PVN Tool Apps
 
-A Windows AutoIt tool for generating short, useful fantasy/sci-fi style names.
+A collection of desktop utilities, generators, and game-tool experiments by
+[pvn228-ai](https://github.com/pvn228-ai).
 
-This generator is designed for non-human names: relics, machines, creatures, places, factions, spells, minerals, cute names, elven names, pets, celestial names, nature names, food names, weapons, potions, ships, dungeons, toys, and spirits.
+## PVN's Warband Tweaker v1.0.0
 
-## Features
+An unofficial all-in-one Windows editor for Mount & Blade: Warband. It combines
+unrestricted battle sizing, complete `rgl_config.txt` editing, `module.ini`
+tweaks, guarded Native gameplay formulas, party templates, item creation and
+editing, full troop editing, face tools, and advanced compiled-module text access.
 
-- Category-based name generation
-- Presets for different naming styles
-- Weirdness slider
-- Gender flavor options
-- Favorites / locks list
-- Double-click to copy names
-- Copy selected name or full list
-- Short names by default
-- Seed support for repeatable results
+- [Download the standalone EXE](<PVN's Warband Tweaker v1.0.0.exe?raw=1>)
+- [Download the complete release ZIP](warband_tweaker/PVNs-Warband-Tweaker-v1.0.0.zip?raw=1)
+- [Read the Warband Tweaker documentation](warband_tweaker/README.md)
+- [View release notes](warband_tweaker/RELEASE-NOTES.txt)
+- [Browse source and verification tools](warband_tweaker/src/)
 
-## Files
+ZIP SHA-256:
+`E35EDD8690F3E0DC1F936E1B94A371442B6D2B77FA50300FE529CEA825FF3493`
 
-- `AdvancedNameGenerator.au3` - AutoIt source code
+Standalone EXE SHA-256:
+`A068B8AE575A780B5098F9C41822B06E780A0FC4927D02D19037CAC3A97942DB`
 
-The compiled `AdvancedNameGenerator.exe` is no longer tracked in this repository (it is ignored via `.gitignore`).
+The release executable is portable and does not require Python. It is unsigned,
+so Windows may display an Unknown Publisher warning.
 
-## How to Use
+## Advanced Name Generator
 
-Compile `AdvancedNameGenerator.au3` with AutoIt (Aut2Exe) to produce `AdvancedNameGenerator.exe`, then run it on Windows.
+A Windows AutoIt tool for generating short fantasy and science-fiction names for
+relics, machines, creatures, places, factions, spells, ships, dungeons, and more.
 
-If Windows warns you because the app is unsigned, choose "More info" and then "Run anyway" only if you trust the download source.
+- Source: [`AdvancedNameGenerator.au3`](AdvancedNameGenerator.au3)
+- Compile with AutoIt/Aut2Exe to create `AdvancedNameGenerator.exe`.
+
+## Procedural World
+
+A Python procedural-world and faction simulation project.
+
+- [Project documentation](procedural_world/README.md)
+- [Source files](procedural_world/)
 
 ## License
 
-Personal project. License not yet specified.
+Personal projects. Licenses have not yet been specified unless a project folder
+states otherwise.
